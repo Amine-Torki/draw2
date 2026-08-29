@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DRAW2 | Detect & Recognize A Wide range of cards</title>
+  <meta name="description" content="DRAW2 detects and recognizes Yu-Gi-Oh! cards live, inside real dueling scenes, running entirely client-side in your browser via WebGPU.">
+
+  <!-- Favicon: cropped from the project's own banner artwork (figures/banner-draw.png / docs/assets/banner.png) -->
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/favicon-180.png">
+
+  <!-- Link-preview card (Twitter/Discord/Slack/email): same original banner artwork. -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="DRAW2 | Detect & Recognize A Wide range of cards">
+  <meta property="og:description" content="Live Yu-Gi-Oh! card detection and recognition inside real dueling scenes, running 100% client-side in the browser.">
+  <meta property="og:image" content="assets/banner.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="assets/banner.png">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+    }
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { 
+      font-family: 'Outfit', sans-serif; 
+      margin: 0; overflow-x: hidden;
+    }
+    
+    /* Background Canvas */
+    #bg-canvas { position: fixed; inset: 0; z-index: -1; width: 100vw; height: 100vh; pointer-events: none; transition: filter 500ms; }
+    html:not(.dark) #bg-canvas { filter: invert(1) hue-rotate(180deg) opacity(0.5); }
+    
+    /* Glass Bento Box */
+    .glass-bento {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(24px) saturate(1.5);
+      border: 1px solid rgba(0, 0, 0, 0.05);
+      border-radius: 32px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 32px rgba(0, 0, 0, 0.05);
+      transition: transform 250ms cubic-bezier(0.23, 1, 0.32, 1), 
+                  border-color 250ms cubic-bezier(0.23, 1, 0.32, 1),
+                  box-shadow 250ms cubic-bezier(0.23, 1, 0.32, 1),
+                  background-color 500ms ease;
+    }
+    html.dark .glass-bento {
+      background: rgba(20, 20, 25, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
+    
+    @media (hover: hover) and (pointer: fine) {
+      .glass-bento:hover {
+        transform: translateY(-4px);
+        border-color: rgba(0, 0, 0, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 12px 48px rgba(0, 0, 0, 0.1);
+      }
+      html.dark .glass-bento:hover {
+        border-color: rgba(255, 255, 255, 0.2);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 12px 48px rgba(0, 0, 0, 0.6);
+      }
+    }
+
+    /* Polished Interactive Elements */
+    .btn {
+      transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background-color 200ms ease, color 200ms ease;
+    }
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    /* Staggered Entrance */
+    .stagger-item {
+      opacity: 0;
+      transform: translateY(20px);
+      animation: enter-bento 500ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+    }
+    @keyframes enter-bento {
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .d-1 { animation-delay: 50ms; }
+    .d-2 { animation-delay: 100ms; }
+    .d-3 { animation-delay: 150ms; }
+    .d-4 { animation-delay: 200ms; }
+    .d-5 { animation-delay: 250ms; }
+    .d-6 { animation-delay: 300ms; }
+
+    /* Custom Scrollbar for inner elements */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(150, 150, 150, 0.3); border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(150, 150, 150, 0.5); }
+    html.dark ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); }
+    html.dark ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+
+    /* Execution panel starts empty (no webcam, no rendered output yet): show a
+       resting placeholder so the right column never looks broken. Hidden as
+       soon as either real view becomes visible. */
+    #execution-panel:has(#webcam-wrap:not([hidden])) #output-placeholder,
+    #execution-panel:has(#canvas-wrap:not([hidden])) #output-placeholder {
+      display: none;
+    }
+    #execution-panel:has(#results:not([hidden])) #results-placeholder {
+      display: none;
+    }
+  </style>
+</head>
+<body class="p-6 md:p-12 selection:bg-emerald-500/30 bg-zinc-50 dark:bg-black text-zinc-900 dark:text-white transition-colors duration-500">
+
+  <div id="bg-canvas"></div>
+
+  <!-- Header -->
+  <header class="max-w-7xl mx-auto flex justify-between items-center mb-12 stagger-item d-1">
+    <div class="flex items-center gap-3">
+      <img src="assets/favicon-180.png" alt="" class="w-9 h-9 rounded-full border border-black/10 dark:border-white/20 object-cover shrink-0">
+      <h1 class="text-3xl font-extrabold tracking-tighter">DRAW2</h1>
+    </div>
+    <div class="flex gap-4">
+      <button id="theme-toggle" class="btn glass-bento w-11 h-11 flex items-center justify-center rounded-full text-zinc-500 dark:text-white border !border-black/5 dark:!border-white/20">
+        <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+        <svg class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+      </button>
+      <a href="#demo" class="btn glass-bento px-6 py-2.5 text-sm font-bold border !border-black/5 dark:!border-white/20 !rounded-full">Live Demo</a>
+    </div>
+  </header>
+  
+  <main class="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 pb-32">
+    
+    <!-- Hero / Headline Bento -->
+    <section class="glass-bento col-span-1 md:col-span-12 lg:col-span-8 p-6 sm:p-8 md:p-10 flex flex-col justify-between min-h-[320px] md:min-h-[400px] stagger-item d-2 relative overflow-hidden group">
+      <div class="absolute inset-0 bg-gradient-to-br from-emerald-500/5 dark:from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+      <div class="relative z-10">
+        <h2 class="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tighter leading-tight max-w-2xl text-zinc-900 dark:text-white">
+          Detect Yu-Gi-Oh! cards in real-time.
+        </h2>
+        <p class="text-zinc-600 dark:text-white/60 text-base sm:text-lg mt-6 max-w-xl leading-relaxed">
+          DRAW2 uses a state-of-the-art model architecture trained on 13,000+ cards to recognize them automatically under real dueling conditions, something no prior system does at this scale currently.
+          <br><br>
+          Try the demo below to run the model on your own GPU in real time. Nothing is uploaded or stored by us.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-4 mt-12 relative z-10">
+        <a href="#demo" class="btn bg-black text-white dark:bg-white dark:text-black px-8 py-3.5 rounded-full font-bold shadow-lg">Try Live Demo</a>
+        <a href="mailto:hich.tala.phd@gmail.com?subject=DRAW2%20partnership" class="btn bg-emerald-500 text-white px-8 py-3.5 rounded-full font-bold shadow-lg hover:bg-emerald-400">Get in Touch</a>
+        <a href="https://github.com/HichTala/draw2-plugin" target="_blank" class="btn text-sm font-medium text-zinc-500 dark:text-white/50 hover:text-zinc-900 dark:hover:text-white underline underline-offset-4">Streamer? Get the OBS plugin →</a>
+      </div>
+    </section>
+
+    <!-- Visual Proof Bento -->
+    <div class="glass-bento col-span-1 md:col-span-12 lg:col-span-4 min-h-[240px] md:min-h-[400px] flex items-center justify-center p-2 relative overflow-hidden group stagger-item d-3">
+      <div class="absolute inset-0 bg-emerald-500/20 blur-3xl opacity-0 group-hover:opacity-50 transition-opacity duration-700"></div>
+      <img src="assets/proof_of_concept.gif" alt="DRAW2 detecting and naming Yu-Gi-Oh! cards live on a dueling mat, overlaying bounding boxes and card names in real time" class="w-full h-full object-cover rounded-[28px] border border-black/5 dark:border-white/10 relative z-10 opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-700 cubic-bezier(0.23, 1, 0.32, 1)">
+    </div>
+
+    <!-- Community Row -->
+    <a href="https://www.reddit.com/r/yugioh/comments/1oq5wzz/i_trained_again_my_deep_learning_model_to_detect/" target="_blank" class="glass-bento btn col-span-1 md:col-span-6 lg:col-span-4 p-8 stagger-item d-4 flex flex-col justify-between">
+      <div class="flex justify-between items-center mb-6">
+        <div class="flex items-center gap-2 font-bold"><svg class="w-5 h-5 text-[#FF4500]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"/></svg> r/yugioh</div>
+      </div>
+      <h3 class="font-bold text-lg mb-2">I trained again my deep learning model...</h3>
+      <p class="text-sm text-zinc-600 dark:text-white/60 mb-6 leading-relaxed line-clamp-3">"About a year and a half ago, I shared a little project that could recognize Yu-Gi-Oh! cards... This time, it's an OBS plugin, so it's actually easy to use..."</p>
+      <div class="text-xs text-zinc-500 dark:text-white/50 font-bold">Read the original post</div>
+    </a>
+
+    <a href="https://x.com/hichtala/status/2093686346816667917" target="_blank" class="glass-bento btn col-span-1 md:col-span-6 lg:col-span-4 p-8 stagger-item d-5 flex flex-col justify-between">
+      <div class="flex justify-between items-center mb-6">
+        <div class="flex items-center gap-2 font-bold">
+          <img src="https://avatars.githubusercontent.com/u/98521878?v=4" class="w-6 h-6 rounded-full border border-black/10 dark:border-white/20" alt="HichTala"> HichTala
+        </div>
+        <svg class="w-5 h-5 text-zinc-900 dark:text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>
+      </div>
+      <p class="text-sm text-zinc-600 dark:text-white/80 mb-6 leading-relaxed">As creator of DRAW2 (3 years in the making), I know how tough #Yu-Gi-Oh! cards detection is. I'm completing my PhD thesis in 2 months, so I believe I can offer expert insight on this subject.</p>
+      <div class="text-xs text-[#1DA1F2] font-bold">Read the original Thread</div>
+    </a>
+
+    <a href="https://medium.com/@hich.tala.phd/how-i-trained-again-my-model-to-detect-and-recognise-a-wide-range-of-yu-gi-oh-cards-5c567a320b0a" target="_blank" class="glass-bento btn col-span-1 md:col-span-12 lg:col-span-4 p-8 stagger-item d-6 flex flex-col justify-between">
+      <div class="flex justify-between items-center mb-6">
+        <div class="flex items-center gap-2 font-bold">
+          <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M13.54 12a6.8 6.8 0 01-6.77 6.82A6.8 6.8 0 010 12a6.8 6.8 0 016.77-6.82A6.8 6.8 0 0113.54 12zM20.96 12c0 3.54-1.51 6.42-3.38 6.42-1.87 0-3.38-2.88-3.38-6.42s1.51-6.42 3.38-6.42 3.38 2.88 3.38 6.42zM24 12c0 3.17-.53 5.75-1.19 5.75-.66 0-1.19-2.58-1.19-5.75s.53-5.75 1.19-5.75c.66 0 1.19 2.57 1.19 5.75z"/></svg> Medium</div>
+        <div class="text-xs text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2 py-1 rounded">Deep Dive</div>
+      </div>
+      <h3 class="font-bold text-lg mb-2">How I trained my model...</h3>
+      <p class="text-sm text-zinc-600 dark:text-white/60 mb-6 leading-relaxed line-clamp-2">A complete breakdown of the data collection, labeling process with YOLO, and how Vision Transformers handle the 13k+ classification classes.</p>
+      <div class="text-xs text-zinc-500 dark:text-white/50 font-bold">Read the article</div>
+    </a>
+
+    <!-- Pipeline Interface Bento -->
+    <section id="demo" class="glass-bento col-span-1 md:col-span-12 p-8 lg:p-12 grid grid-cols-1 lg:grid-cols-12 gap-12 mt-12 stagger-item d-6">
+      
+      <!-- Input Panel -->
+      <div class="lg:col-span-4 flex flex-col gap-6">
+        <h3 class="text-2xl font-bold tracking-tight mb-2">Live Demo</h3>
+        
+        <div id="load-panel" class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-2xl p-6 flex flex-col gap-4">
+          <div class="flex flex-col gap-1.5">
+            <span class="text-xs font-medium text-zinc-500 dark:text-white/50">Model</span>
+            <div id="model-toggle" class="grid grid-cols-3 gap-1 bg-black/5 dark:bg-black/40 border border-zinc-200 dark:border-white/10 rounded-xl p-1">
+              <label class="relative cursor-pointer">
+                <input type="radio" name="model" value="yugiscan" data-label="YugiScan INT8 Vision Transformer" data-size="40 MB" class="peer sr-only" checked>
+                <span class="flex flex-col items-center justify-center gap-0.5 rounded-lg py-2 text-center peer-checked:bg-white dark:peer-checked:bg-white/10 peer-checked:shadow-sm transition-all">
+                  <span class="text-sm font-bold">Flash</span>
+                  <span class="text-[10px] font-mono text-zinc-500 dark:text-white/50">40 MB</span>
+                </span>
+              </label>
+              <label class="relative cursor-pointer">
+                <input type="radio" name="model" value="fp16" data-label="FP16 Vision Transformer" data-size="193 MB" class="peer sr-only">
+                <span class="flex flex-col items-center justify-center gap-0.5 rounded-lg py-2 text-center peer-checked:bg-white dark:peer-checked:bg-white/10 peer-checked:shadow-sm transition-all">
+                  <span class="text-sm font-bold">Medium</span>
+                  <span class="text-[10px] font-mono text-zinc-500 dark:text-white/50">193 MB</span>
+                </span>
+              </label>
+              <label class="relative cursor-pointer">
+                <input type="radio" name="model" value="fp32" data-label="FP32 Vision Transformer" data-size="386 MB" class="peer sr-only">
+                <span class="flex flex-col items-center justify-center gap-0.5 rounded-lg py-2 text-center peer-checked:bg-white dark:peer-checked:bg-white/10 peer-checked:shadow-sm transition-all">
+                  <span class="text-sm font-bold">Max</span>
+                  <span class="text-[10px] font-mono text-zinc-500 dark:text-white/50">386 MB</span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <button id="btn-load" class="btn relative overflow-hidden w-full bg-black text-white dark:bg-white dark:text-black font-bold rounded-xl px-4 py-3 hover:bg-zinc-800 dark:hover:bg-white/90">
+            <span id="lp-bar" class="absolute inset-y-0 left-0 bg-emerald-500 w-0 transition-all duration-300"></span>
+            <span id="btn-load-label" class="relative z-10 block truncate">Download Model</span>
+          </button>
+        </div>
+
+        <!-- data-keep-visible: input/output are separate columns here, don't auto-hide -->
+        <div id="dropzone" data-keep-visible class="bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 border-dashed rounded-2xl p-8 text-center cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 transition-all duration-300 group flex-1 flex flex-col items-center justify-center">
+          <input type="file" id="file-input" accept="image/*,video/mp4,video/webm,video/quicktime" class="hidden">
+          <div class="w-12 h-12 bg-black/10 dark:bg-white/10 rounded-full flex items-center justify-center mb-4 group-hover:bg-emerald-500/20 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+            <svg class="w-6 h-6 text-zinc-400 dark:text-white/50 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          </div>
+          <span class="font-bold text-zinc-700 dark:text-white/80">Drop an Image</span>
+          <p class="text-xs text-zinc-500 dark:text-white/55 mt-2">or select a file, or paste (Ctrl+V)</p>
+          <button id="dz-browse" class="hidden"></button>
+          <button id="btn-webcam" class="btn mt-4 text-xs font-bold bg-white dark:bg-white/10 px-4 py-1.5 rounded-full border border-black/5 dark:border-white/10 shadow-sm hover:bg-zinc-50 dark:hover:bg-white/20">Use Camera</button>
+
+          <div class="mt-6 pt-5 border-t border-black/10 dark:border-white/10 w-full flex flex-col items-center">
+            <p class="text-[10px] font-medium text-zinc-400 dark:text-white/50 uppercase tracking-wide mb-3">Or try a sample</p>
+            <div class="flex flex-wrap items-center justify-center gap-3">
+              <button type="button" id="sample-photo" data-sample="samples/sample_photo.jpg" data-sample-type="image/jpeg" disabled class="sample-btn group/s disabled:opacity-40 transition-all text-left">
+                <img src="samples/thumb_photo.jpg" alt="" class="w-24 h-14 object-cover rounded-lg border border-black/10 dark:border-white/10 group-hover/s:border-emerald-400 shadow-sm">
+                <span class="block mt-1 text-[10px] font-medium text-zinc-500 dark:text-white/55 group-hover/s:text-emerald-500">Sample photo</span>
+              </button>
+              <button type="button" id="sample-gif" data-sample="samples/sample_clip.gif" data-sample-type="image/gif" disabled class="sample-btn group/s disabled:opacity-40 transition-all text-left">
+                <img src="samples/thumb_gif.jpg" alt="" class="w-24 h-14 object-cover rounded-lg border border-black/10 dark:border-white/10 group-hover/s:border-emerald-400 shadow-sm">
+                <span class="block mt-1 text-[10px] font-medium text-zinc-500 dark:text-white/55 group-hover/s:text-emerald-500">Sample GIF</span>
+              </button>
+              <button type="button" id="sample-video" data-sample="samples/sample_video.mp4" data-sample-type="video/mp4" disabled class="sample-btn group/s disabled:opacity-40 transition-all text-left">
+                <img src="samples/thumb_video.jpg" alt="" class="w-24 h-14 object-cover rounded-lg border border-black/10 dark:border-white/10 group-hover/s:border-emerald-400 shadow-sm">
+                <span class="block mt-1 text-[10px] font-medium text-zinc-500 dark:text-white/55 group-hover/s:text-emerald-500">Sample video</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Execution Panel -->
+      <div id="execution-panel" class="lg:col-span-8 flex flex-col gap-6">
+
+        <!-- Resting state: shown until a webcam or a rendered result exists (see :has() rule above) -->
+        <div id="output-placeholder" class="shrink-0 bg-black/5 dark:bg-white/5 border border-dashed border-black/10 dark:border-white/10 rounded-2xl aspect-video flex flex-col items-center justify-center gap-3 text-center">
+          <div class="w-12 h-12 bg-black/10 dark:bg-white/10 rounded-full flex items-center justify-center text-zinc-400 dark:text-white/40">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 16.5V6.75A2.25 2.25 0 015.25 4.5h13.5A2.25 2.25 0 0121 6.75v9.75m-18 0A2.25 2.25 0 005.25 19.5h13.5A2.25 2.25 0 0021 16.5m-18 0l4.72-4.72a1.5 1.5 0 012.122 0L12 14.94l1.158-1.158a1.5 1.5 0 012.122 0L21 16.5"/></svg>
+          </div>
+          <p class="text-sm font-medium text-zinc-500 dark:text-white/55">Detection output will appear here</p>
+        </div>
+
+        <div id="webcam-wrap" hidden class="shrink-0 relative rounded-2xl overflow-hidden bg-black aspect-video border border-black/10 dark:border-white/10 shadow-2xl">
+          <video id="webcam-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
+
+          <!-- Live detection overlay: mirrors the video 1:1, redrawn every inference tick with drawOverlay(). -->
+          <canvas id="webcam-live-canvas" hidden class="absolute inset-0 w-full h-full object-cover pointer-events-none"></canvas>
+
+          <div id="webcam-live-badge" hidden class="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur text-white text-xs font-bold px-3 py-1.5 rounded-full">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span> LIVE
+            <span id="webcam-live-latency" class="font-mono font-normal text-white/60"></span>
+          </div>
+
+          <div class="absolute bottom-6 inset-x-0 flex items-center justify-center gap-3">
+            <button id="btn-live" class="btn bg-white/90 text-zinc-900 px-6 py-3 rounded-full font-bold shadow-lg hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/90">Live Detect</button>
+            <button id="btn-snap" class="btn bg-emerald-500 text-white px-8 py-3 rounded-full font-bold shadow-lg hover:bg-emerald-400">Capture</button>
+          </div>
+        </div>
+        
+        <div id="canvas-wrap" hidden class="shrink-0 relative bg-black/10 dark:bg-black/50 border border-black/10 dark:border-white/10 rounded-2xl p-2 aspect-video flex items-center justify-center">
+          <canvas id="canvas-out" class="max-w-full max-h-full object-contain rounded-xl shadow-2xl"></canvas>
+          <button id="btn-fullscreen" title="View fullscreen" class="btn absolute top-4 right-4 w-9 h-9 flex items-center justify-center rounded-full bg-black/60 text-white backdrop-blur hover:bg-black/80">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 20.25v-4.5m0 4.5h-4.5m4.5 0L15 15"/></svg>
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
+          <!-- Terminal -->
+          <div class="bg-zinc-900/90 dark:bg-black/60 backdrop-blur rounded-2xl border border-black/10 dark:border-white/10 flex flex-col h-[300px] overflow-hidden shadow-inner text-white">
+            <div class="px-4 py-3 border-b border-white/10 text-xs font-bold font-mono text-white/50 flex justify-between bg-white/5">
+              <span>console</span>
+              <div id="running-row" hidden class="text-emerald-400 flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Executing
+              </div>
+            </div>
+            <div id="dbg-log" class="p-4 overflow-y-auto flex-1 font-mono text-[11px] text-emerald-400/80 space-y-1.5 leading-relaxed">
+              <div>> Waiting for input...</div>
+            </div>
+          </div>
+
+          <!-- Results placeholder: shown until #results has content, matches #output-placeholder's role. -->
+          <div id="results-placeholder" class="bg-black/5 dark:bg-white/5 border border-dashed border-black/10 dark:border-white/10 rounded-2xl h-[300px] flex flex-col items-center justify-center gap-3 text-center">
+            <div class="w-12 h-12 bg-black/10 dark:bg-white/10 rounded-full flex items-center justify-center text-zinc-400 dark:text-white/40">
+              <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 3.75H6.912a2.25 2.25 0 00-2.15 1.588L2.35 13.177a2.25 2.25 0 00-.1.661V18a2.25 2.25 0 002.25 2.25h15.5A2.25 2.25 0 0022.25 18v-4.162c0-.224-.034-.447-.1-.661L19.74 5.338a2.25 2.25 0 00-2.15-1.588H15M9 3.75c0 1.036.84 1.875 1.875 1.875h2.25c1.036 0 1.875-.84 1.875-1.875M9 3.75c0-1.036.84-1.875 1.875-1.875h2.25c1.036 0 1.875.84 1.875 1.875m-8.25 8.25h.008v.008H8.25v-.008zm0 0h7.5"/></svg>
+            </div>
+            <p class="text-sm font-medium text-zinc-500 dark:text-white/55">Cards detected will appear here</p>
+          </div>
+
+          <!-- Results -->
+          <div id="results" hidden class="bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 rounded-2xl p-6 flex flex-col relative overflow-hidden h-[300px]">
+            <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-black/10 dark:via-white/20 to-transparent"></div>
+            <div class="flex justify-between items-center mb-6">
+              <h4 class="font-bold">Detection Output</h4>
+              <button id="btn-reset" class="btn text-xs font-bold bg-black/5 dark:bg-white/10 px-3 py-1.5 rounded hover:bg-black/10 dark:hover:bg-white/20">Clear All</button>
+            </div>
+            <div id="cards-grid" class="grid grid-cols-2 md:grid-cols-3 gap-3 overflow-y-auto max-h-[220px] pr-2 content-start pb-2"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="max-w-7xl mx-auto mt-8 pt-8 border-t border-black/10 dark:border-white/10 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-zinc-500 dark:text-white/50">
+    <p class="max-w-2xl leading-relaxed text-center sm:text-left">
+      DRAW2 is an independent open-source project by HichTala. It is not affiliated with, endorsed by, or sponsored by Konami Digital Entertainment. "Yu-Gi-Oh!" is a trademark of Konami.
+    </p>
+    <p class="whitespace-nowrap">
+      Website designed by <a href="https://github.com/Amine-Torki" target="_blank" class="btn font-medium text-zinc-600 dark:text-white/60 hover:text-emerald-600 dark:hover:text-emerald-400">@Amine-Torki</a>
+    </p>
+  </footer>
+
+  <div id="fullscreen-viewer" hidden class="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 cursor-zoom-out">
+    <img id="fullscreen-viewer-img" class="max-w-full max-h-full object-contain rounded-xl shadow-2xl cursor-default" alt="Detection result, enlarged">
+    <button id="btn-fullscreen-close" title="Close" class="btn absolute top-4 right-4 sm:top-6 sm:right-6 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <script>
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+      document.documentElement.classList.toggle('dark');
+    });
+  </script>
+
+  <script type="module">
+    import * as THREE from 'https://esm.sh/three@0.160.0';
+    const container = document.getElementById('bg-canvas');
+    const vertexShader = `void main() { gl_Position = vec4(position, 1.0); }`;
+    const fragmentShader = `
+      precision highp float; uniform vec2 resolution; uniform float time;
+      void main(void) {
+        vec2 uv = (gl_FragCoord.xy * 2.0 - resolution.xy) / min(resolution.x, resolution.y);
+        float t = time * 0.05; vec3 color = vec3(0.0);
+        for (int j = 0; j < 3; j++) {
+          for (int i = 0; i < 5; i++) {
+            color[j] += 0.002 * float(i * i) / abs(fract(t - 0.01 * float(j) + float(i) * 0.01) * 5.0 - length(uv) + mod(uv.x + uv.y, 0.2));
+          }
+        }
+        float mono = (color.r + color.g + color.b) / 3.0;
+        vec3 finalColor = mix(color, mono * vec3(0.1, 0.5, 0.3), 1.0);
+        gl_FragColor = vec4(finalColor * 0.6, 1.0);
+      }
+    `;
+    const scene = new THREE.Scene(); const camera = new THREE.Camera(); camera.position.z = 1;
+    const material = new THREE.ShaderMaterial({ uniforms: { time: { value: 1.0 }, resolution: { value: new THREE.Vector2() } }, vertexShader, fragmentShader });
+    scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio); container.appendChild(renderer.domElement);
+    const onResize = () => { renderer.setSize(container.clientWidth, container.clientHeight); material.uniforms.resolution.value.x = renderer.domElement.width; material.uniforms.resolution.value.y = renderer.domElement.height; };
+    onResize(); window.addEventListener("resize", onResize);
+
+    // Pause animation when tab is hidden, reduced motion is preferred, or inference is running
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let rafId = null;
+    let inferencePaused = false;
+    const animate = () => {
+        rafId = requestAnimationFrame(animate);
+        material.uniforms.time.value += 0.03;
+        renderer.render(scene, camera);
+    };
+    function syncAnimation() {
+        const shouldRun = !reduceMotion && !document.hidden && !inferencePaused;
+        if (shouldRun && !rafId) animate();
+        if (!shouldRun && rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    }
+    renderer.render(scene, camera); // paint one frame immediately either way
+    syncAnimation();
+    document.addEventListener("visibilitychange", syncAnimation);
+
+    // pipeline.js calls this around inference; it knows nothing about Three.js.
+    window.__bgAnim = {
+        pause()  { inferencePaused = true;  syncAnimation(); },
+        resume() { inferencePaused = false; syncAnimation(); }
+    };
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+  <script src="pipeline.js"></script>
+  <script>
+    const observer = new MutationObserver(() => {
+      const grid = document.getElementById('cards-grid');
+      Array.from(grid.children).forEach(el => {
+        if(!el.classList.contains('polished')) {
+          const meta = el.children[1];
+          const nameEl = meta.children[0];
+          const scoreEl = meta.children[1];
+          
+          el.title = nameEl.textContent;
+
+          // Master container: clean borderless rectangle, forced aspect ratio
+          el.className = 'relative polished opacity-0 hover:z-10 cursor-pointer overflow-hidden rounded shadow-sm border border-black/5 dark:border-white/10 group w-full aspect-[59/86] shrink-0';
+          el.animate([
+            { opacity: 0, transform: 'scale(0.9)' },
+            { opacity: 1, transform: 'scale(1)' }
+          ], { duration: 250, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', fill: 'forwards' });
+          
+          // Image crop (stretched back to physical card ratio)
+          const canvas = el.children[0];
+          canvas.className = 'absolute inset-0 w-full h-full object-fill transition-transform duration-500 group-hover:scale-110';
+          
+          // Hide original meta container
+          meta.style.display = 'none';
+          
+          // Overlapping score
+          const badge = document.createElement('div');
+          badge.className = 'absolute top-0 left-0 bg-black/80 backdrop-blur text-emerald-400 font-mono text-[9px] font-bold px-1.5 py-0.5 rounded-br pointer-events-none';
+          badge.textContent = scoreEl.textContent;
+          el.appendChild(badge);
+        }
+      });
+    });
+    observer.observe(document.getElementById('cards-grid'), { childList: true });
+  </script>
+</body>
+</html>

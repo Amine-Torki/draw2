@@ -1,0 +1,13 @@
+# docs/models/ - put ONNX files here (see docs/export_models.py)
+# Weights are hosted externally (HuggingFace bucket) instead of committed.
+docs/models/*.onnx
+docs/models/card_labels_yugiscan.json
+
+!docs/models/cardnames.json
+!docs/models/.gitkeep
+
+__pycache__/
+*.pyc
+
+# Discarded design drafts, kept locally only.
+docs/Archive/
