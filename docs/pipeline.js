@@ -135,6 +135,8 @@ function injectVerbosityToggle() {
 // Load Panel
 const $ = id => document.getElementById(id);
 
+const T = (key, vars) => (window.t ? window.t(key, vars) : key);
+
 function setLoadStatus(text, pct, hint = "") {
     const bar = $("lp-bar");
     if (bar) bar.style.width = pct + "%";
@@ -194,7 +196,7 @@ async function init() {
     loadAbortController = new AbortController();
     const signal = loadAbortController.signal;
 
-    if (btn && !label) btn.textContent = "Loading";
+    if (btn && !label) btn.textContent = T("runtime.loading");
     $("load-progress")?.removeAttribute("hidden");
 
     try {
@@ -202,22 +204,22 @@ async function init() {
         ort.env.logLevel = "error";
         ort.env.wasm.proxy = true; // Run WASM in a dedicated Web Worker
 
-        setLoadStatus("Downloading YOLO detector (39 MB)", 0, "");
+        setLoadStatus(T("runtime.dl_yolo"), 0, "");
         const yoloBuf = await fetchWithProgress(
-            YOLO_URL, "Downloading YOLO detector", 0, 30, signal
+            YOLO_URL, T("runtime.dl_yolo"), 0, 30, signal
         );
-        setLoadStatus("Compiling YOLO session", 30, "");
+        setLoadStatus(T("runtime.compiling_yolo"), 30, "");
         yoloSession = await ort.InferenceSession.create(yoloBuf, {
             executionProviders: ["webgpu", "wasm"],
             logSeverityLevel: 3
         });
 
         const vitSize = precision === "fp32" ? "386 MB" : precision === "fp16" ? "193 MB" : "40 MB";
-        setLoadStatus(`Downloading ViT classifier (${vitSize})`, 32, "");
+        setLoadStatus(T("runtime.dl_vit", { size: vitSize }), 32, "");
         const vitBuf = await fetchWithProgress(
-            vitUrl, "Downloading ViT classifier", 32, 92, signal
+            vitUrl, T("runtime.dl_vit", { size: vitSize }), 32, 92, signal
         );
-        setLoadStatus("Compiling ViT session", 92, "");
+        setLoadStatus(T("runtime.compiling_vit"), 92, "");
         
         // Quantized INT8 graphs run on WASM to avoid WebGPU INT8 quantization issues
         const vitProviders = (precision === "fp32" || precision === "fp16") ? ["webgpu", "wasm"] : ["wasm"];
@@ -229,12 +231,19 @@ async function init() {
         const labelsBuf = await fetchWithProgress(namesUrl, "Downloading card DB", 92, 100, signal);
         cardnames = JSON.parse(new TextDecoder().decode(labelsBuf));
 
-        setLoadStatus("Ready", 100, "");
+        setLoadStatus(T("runtime.warming_up"), 98, "");
+        // WebGPU compiles shader pipelines on first real use, not at session
+        // creation. Paying that cost here (dummy zero tensors) keeps it off
+        // the first live-detection frames.
+        await yoloSession.run({ [yoloSession.inputNames[0]]: new ort.Tensor("float32", new Float32Array(3 * YOLO_SIZE * YOLO_SIZE), [1, 3, YOLO_SIZE, YOLO_SIZE]) });
+        await vitSession.run({ [vitSession.inputNames[0]]: new ort.Tensor("float32", new Float32Array(3 * CROP_SIZE * CROP_SIZE), [1, 3, CROP_SIZE, CROP_SIZE]) });
+
+        setLoadStatus(T("runtime.ready"), 100, "");
         await new Promise(r => setTimeout(r, 600));
 
         if (btn) btn.disabled = true;
-        if (label) label.textContent = "Engine Ready";
-        else if (btn) btn.textContent = "Engine Ready";
+        if (label) label.textContent = T("runtime.engine_ready");
+        else if (btn) btn.textContent = T("runtime.engine_ready");
         $("lp-bar")?.style.setProperty("width", "100%");
         $("load-progress")?.setAttribute("hidden", "");
 
@@ -249,10 +258,10 @@ async function init() {
         $("lp-bar")?.style.setProperty("width", "0%");
         if (err.name === "AbortError") {
             if (btn) btn.disabled = false;
-            if (label) label.textContent = "Download Model";
+            if (label) label.textContent = T("demo.btn_download");
             return;
         }
-        if (label) label.textContent = "Retry";
+        if (label) label.textContent = T("runtime.retry");
         if (btn) btn.disabled = false;
         console.error(err);
     } finally {
@@ -613,27 +622,21 @@ function rotateImageData(imageData, degrees) {
 }
 
 // Drawing & UI
-function drawOverlay(canvas, srcImage, detections, predictions) {
-    canvas.width=srcImage.width; canvas.height=srcImage.height;
-    const ctx=canvas.getContext("2d");
-    const bmp=imageDataToBitmap(srcImage);
-    ctx.drawImage(bmp,0,0);
-    bmp.close();
-
+function drawDetections(ctx, refWidth, detections, predictions) {
     detections.forEach(({pts},idx) => {
         ctx.beginPath();
         ctx.moveTo(pts[0].x,pts[0].y);
         for (let i=1;i<4;i++) ctx.lineTo(pts[i].x,pts[i].y);
         ctx.closePath();
         ctx.strokeStyle="#c8a95e";
-        ctx.lineWidth=Math.max(2,srcImage.width/400);
+        ctx.lineWidth=Math.max(2,refWidth/400);
         ctx.stroke();
 
         if (predictions[idx]?.[0]) {
             const name=predictions[idx][0].name||"";
             const topX=Math.min(...pts.map(p=>p.x));
             const topY=Math.min(...pts.map(p=>p.y));
-            const fs=Math.max(12,srcImage.width/60);
+            const fs=Math.max(12,refWidth/60);
             ctx.font=`bold ${fs}px Inter,sans-serif`;
             const tw=ctx.measureText(name).width;
             ctx.fillStyle="rgba(0,0,0,.65)";
@@ -642,6 +645,54 @@ function drawOverlay(canvas, srcImage, detections, predictions) {
             ctx.fillText(name,topX+2,topY-4);
         }
     });
+}
+
+function drawOverlay(canvas, srcImage, detections, predictions) {
+    canvas.width=srcImage.width; canvas.height=srcImage.height;
+    const ctx=canvas.getContext("2d");
+    const bmp=imageDataToBitmap(srcImage);
+    ctx.drawImage(bmp,0,0);
+    bmp.close();
+    drawDetections(ctx, srcImage.width, detections, predictions);
+}
+
+// Letterboxes the rendered result to match the result card's actual content
+// box aspect ratio (not just its aspect-video CSS ratio: padding shifts the
+// two slightly apart) with black bars, so a square/portrait source image
+// never leaves uneven empty gutters around the canvas content, which would
+// throw off the BorderTrail loading animation.
+function getResultAspect() {
+    const wrap = document.getElementById("canvas-wrap");
+    if (wrap) {
+        const cs = getComputedStyle(wrap);
+        const w = wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        const h = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+        if (w > 0 && h > 0) return w / h;
+    }
+    return 16 / 9;
+}
+function drawOverlayLetterboxed(canvas, srcImage, detections, predictions) {
+    const targetAspect = getResultAspect();
+    const srcAspect = srcImage.width / srcImage.height;
+    const canvasW = srcAspect > targetAspect ? srcImage.width : Math.round(srcImage.height * targetAspect);
+    const canvasH = srcAspect > targetAspect ? Math.round(srcImage.width / targetAspect) : srcImage.height;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvasW, canvasH);
+
+    const offsetX = Math.round((canvasW - srcImage.width) / 2);
+    const offsetY = Math.round((canvasH - srcImage.height) / 2);
+    const bmp = imageDataToBitmap(srcImage);
+    ctx.drawImage(bmp, offsetX, offsetY);
+    bmp.close();
+
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    drawDetections(ctx, srcImage.width, detections, predictions);
+    ctx.restore();
 }
 
 //  RESULT CARDS 
@@ -789,14 +840,14 @@ async function runPipeline(imageData) {
     if (resultsEl) resultsEl.hidden = true;
     if (canvasWrap) canvasWrap.hidden = false;
 
-    if (canvasOut) {
-        canvasOut.width = imageData.width;
-        canvasOut.height = imageData.height;
-        canvasOut.getContext("2d").putImageData(imageData, 0, 0);
-    }
+    // Letterbox the preview up front, before inference runs: the BorderTrail
+    // loading effect hugs the card edge, so the shown frame must already be
+    // padded to the card's aspect ratio, not just the final result.
+    if (canvasOut) drawOverlayLetterboxed(canvasOut, imageData, [], []);
 
     // Pause decorative background during inference to preserve GPU budget
     window.__bgAnim?.pause();
+    if ($("canvas-trail")) $("canvas-trail").hidden = false;
     try {
         const { detections, allPredictions, croppedImages } = await detectAndClassify(imageData, {
             onDetections: dets => status(`Found ${dets.length} card${dets.length === 1 ? "" : "s"}`),
@@ -805,14 +856,14 @@ async function runPipeline(imageData) {
 
         if (detections.length === 0) {
             if (runRow) runRow.hidden = true;
-            if (canvasOut) drawOverlay(canvasOut, imageData, [], []);
-            if (grid) grid.innerHTML = `<p style="color:var(--muted);font-size:.875rem;">No cards found above confidence threshold (${CONF_THRESH*100}%). Try a clearer image.</p>`;
+            if (canvasOut) drawOverlayLetterboxed(canvasOut, imageData, [], []);
+            if (grid) grid.innerHTML = `<p style="grid-column:1/-1;color:var(--muted);font-size:.875rem;">No cards found above confidence threshold (${CONF_THRESH*100}%). Try a clearer image.</p>`;
             if (resultsEl) resultsEl.hidden = false;
             return;
         }
 
         dbg("Rendering overlay");
-        if (canvasOut) drawOverlay(canvasOut, imageData, detections, allPredictions);
+        if (canvasOut) drawOverlayLetterboxed(canvasOut, imageData, detections, allPredictions);
         if (grid) renderResultCards(grid, croppedImages, allPredictions);
         if (runRow) runRow.hidden = true;
         if (resultsEl) resultsEl.hidden = false;
@@ -832,10 +883,11 @@ async function runPipeline(imageData) {
         const resultsEl = $("results");
         if (runRow) runRow.hidden = true;
         setRunLabel("");
-        if (grid) grid.innerHTML = `<p style="color:var(--danger);font-size:.875rem;">Error: ${err.message}</p>`;
+        if (grid) grid.innerHTML = `<p style="grid-column:1/-1;color:var(--danger);font-size:.875rem;">Error: ${err.message}</p>`;
         if (resultsEl) resultsEl.hidden = false;
     } finally {
         window.__bgAnim?.resume();
+        if ($("canvas-trail")) $("canvas-trail").hidden = true;
     }
 }
 
@@ -887,7 +939,7 @@ function setupLoadButton() {
         radio.addEventListener("change", () => {
             if (modelsReady && radio.value !== currentPrecision && btn) {
                 btn.disabled = false;
-                $("btn-load-label").textContent = "Download Model";
+                $("btn-load-label").textContent = T("demo.btn_download");
                 $("lp-bar")?.style.setProperty("width", "0%");
             }
         });
@@ -943,6 +995,9 @@ function setupDropzone() {
 }
 
 function setupSampleButtons() {
+    // Sits inside #dropzone; don't also trigger its file picker on click.
+    $("source-video-link")?.addEventListener("click", e => e.stopPropagation());
+
     document.querySelectorAll(".sample-btn").forEach(btn => {
         btn.addEventListener("click", async (e) => {
             e.stopPropagation(); // buttons sit inside #dropzone; don't also trigger its file picker
@@ -1082,7 +1137,7 @@ function setupWebcam() {
     function stopLive() {
         liveActive = false;
         window.__bgAnim?.resume();
-        if (btnLive) btnLive.textContent = "Live Detect";
+        if (btnLive) btnLive.textContent = T("runtime.live_detect");
         if (liveCanvas) liveCanvas.hidden = true;
         if (liveBadge) liveBadge.hidden = true;
     }
@@ -1093,11 +1148,6 @@ function setupWebcam() {
         try {
             currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", aspectRatio: { ideal: 16/9 } } });
             video.srcObject = currentStream;
-            video.addEventListener("loadedmetadata", () => {
-                if (video.videoWidth && video.videoHeight && wrap) {
-                    wrap.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
-                }
-            }, { once: true });
             hideDropzoneOnLoad();
             const webcamRow = btnStart.closest(".webcam-row");
             if (webcamRow) webcamRow.style.display = "none";
@@ -1121,7 +1171,7 @@ function setupWebcam() {
         }
         liveActive = true;
         window.__bgAnim?.pause();
-        btnLive.textContent = "Stop Detecting";
+        btnLive.textContent = T("runtime.stop_detecting");
         if (liveCanvas) liveCanvas.hidden = false;
         if (liveBadge) liveBadge.hidden = false;
         liveLoop(video);
@@ -1143,6 +1193,27 @@ function setupWebcam() {
 function stopWebcam() {
     currentStream?.getTracks().forEach(t => t.stop());
     currentStream = null;
+}
+
+// Keeps the fullscreen bubble glued to the image's own corner, not the
+// letterboxed canvas box: object-contain can leave empty gutter around the
+// image, so the button offset is derived from the actual rendered rect.
+function setupFullscreenButtonPosition() {
+    const canvasOut = $("canvas-out");
+    const btn = $("btn-fullscreen");
+    if (!canvasOut || !btn) return;
+
+    function reposition() {
+        const boxW = canvasOut.clientWidth, boxH = canvasOut.clientHeight;
+        if (!boxW || !boxH || !canvasOut.width || !canvasOut.height) return;
+        const scale = Math.min(boxW / canvasOut.width, boxH / canvasOut.height);
+        const offsetX = (boxW - canvasOut.width * scale) / 2;
+        const offsetY = (boxH - canvasOut.height * scale) / 2;
+        const margin = 14;
+        btn.style.top = (offsetY + margin) + "px";
+        btn.style.right = (offsetX + margin) + "px";
+    }
+    new ResizeObserver(reposition).observe(canvasOut);
 }
 
 // Fullscreen Viewer
@@ -1183,6 +1254,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupWebcam();
     setupSampleButtons();
     setupFullscreenViewer();
+    setupFullscreenButtonPosition();
     injectVerbosityToggle();
 });
 
@@ -1209,6 +1281,7 @@ async function processAnimated(file) {
     }
 
     window.__bgAnim?.pause();
+    if ($("canvas-trail")) $("canvas-trail").hidden = false;
     try {
 
     if (!window.GIF) {
@@ -1342,10 +1415,17 @@ async function processAnimated(file) {
     for (let i = 0; i < frames.length; i++) {
         if (cancelRequested) break;
         const { detections, allPredictions } = keyResults.get(nearestKey(i)) || { detections: [], allPredictions: [] };
-        if (canvasOut) drawOverlay(canvasOut, frames[i], detections, allPredictions);
+        if (canvasOut) drawOverlayLetterboxed(canvasOut, frames[i], detections, allPredictions);
 
         gifFrameCtx.clearRect(0, 0, gifW, gifH);
-        if (canvasOut) gifFrameCtx.drawImage(canvasOut, 0, 0, gifW, gifH);
+        if (canvasOut) {
+            // canvasOut is letterboxed for on-page display; crop back out just
+            // the real frame (skip the black bars) so the exported GIF keeps
+            // the source's original aspect ratio, not the UI card's.
+            const cropX = Math.round((canvasOut.width - frames[i].width) / 2);
+            const cropY = Math.round((canvasOut.height - frames[i].height) / 2);
+            gifFrameCtx.drawImage(canvasOut, cropX, cropY, frames[i].width, frames[i].height, 0, 0, gifW, gifH);
+        }
         gif.addFrame(gifFrameCanvas, {delay: Math.round(1000 / EXTRACT_FPS), copy: true});
 
         setRunLabel(`Rendering frame ${i+1}/${frames.length}...`);
@@ -1358,6 +1438,7 @@ async function processAnimated(file) {
 
     } finally {
         window.__bgAnim?.resume();
+        if ($("canvas-trail")) $("canvas-trail").hidden = true;
     }
 
     setRunLabel("Encoding output GIF...");
@@ -1385,7 +1466,7 @@ async function processAnimated(file) {
         dl.href = img.src;
         dl.download = "draw2_prediction.gif";
         dl.className = "absolute bottom-4 right-4 bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-lg hover:bg-emerald-400 z-50";
-        dl.textContent = "Download GIF";
+        dl.textContent = T("runtime.download_gif");
         img.parentNode.style.position = "relative";
         img.parentNode.appendChild(dl);
     });
