@@ -21,26 +21,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
-      - name: Minify JS and inline scripts
+      - name: Minify JS and CSS
         run: |
           npx --yes terser docs/i18n.js -c -m -o /tmp/i18n.js
           npx --yes terser docs/pipeline.js -c -m -o /tmp/pipeline.js
           mv /tmp/i18n.js docs/i18n.js
           mv /tmp/pipeline.js docs/pipeline.js
+          npx --yes lightningcss-cli --minify docs/style.css -o /tmp/style.css
+          mv /tmp/style.css docs/style.css
           npx --yes html-minifier-terser \
             --minify-js --minify-css --remove-comments \
             -o /tmp/index.html docs/index.html
           mv /tmp/index.html docs/index.html
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs
 
@@ -52,4 +54,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
