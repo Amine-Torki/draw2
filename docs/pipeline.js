@@ -1,12 +1,13 @@
 // Config
-const NAMES_URL  = "./models/cardnames.json";
-
-// Hosted weights (>100MB, or moved off-repo by preference)
-const YOLO_URL         = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/ygo_yolo.onnx?download=true";
-const VIT_FP32_URL     = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/vit_fp32.onnx?download=true";
-const VIT_FP16_URL     = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/vit_fp16.onnx?download=true";
-const VIT_YUGISCAN_URL = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/vit_yugiscan_int8.onnx?download=true";
-const YUGISCAN_LABELS_URL = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/card_labels_yugiscan.json?download=true";
+// Hosted ONNX artifacts. cardnames_onnx.json is the ViT-index-keyed variant
+// built by export_models.py; the card_id-keyed one lives on the model repo.
+const BUCKET = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/onnx_models";
+const NAMES_URL           = `${BUCKET}/cardnames_onnx.json?download=true`;
+const YOLO_URL            = `${BUCKET}/ygo_yolo.onnx?download=true`;
+const VIT_FP32_URL        = `${BUCKET}/vit_fp32.onnx?download=true`;
+const VIT_FP16_URL        = `${BUCKET}/vit_fp16.onnx?download=true`;
+const VIT_YUGISCAN_URL    = `${BUCKET}/vit_yugiscan_int8.onnx?download=true`;
+const YUGISCAN_LABELS_URL = `${BUCKET}/card_labels_yugiscan.json?download=true`;
 const CROP_SIZE  = 224;
 const CONF_THRESH = 0.20;
 const VIT_TOPK   = 3;

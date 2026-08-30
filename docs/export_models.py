@@ -5,10 +5,14 @@ Run from the draw2 repo root with the venv active:
     python docs/export_models.py
 
 
-Outputs (in docs/models/):
-    ygo_yolo.onnx   (~20 MB)    — YOLO-OBB detector
-    vit_int8.onnx   (~90 MB)    — ViT classifier, INT8 quantised
-    cardnames.json              — {card_id: {EN, FR, JA: ...}} mapping
+Outputs (in docs/models/), uploaded to the demo bucket under onnx_models/:
+    ygo_yolo.onnx        (~20 MB)   — YOLO-OBB detector
+    vit_int8.onnx        (~90 MB)   — ViT classifier, INT8 quantised
+    cardnames_onnx.json             — {vit_index: {EN, FR, JA, card_id, label}}
+
+Named cardnames_onnx.json to distinguish it from the card_id-keyed cardnames.json
+on the model repo: ONNX export drops the id2label mapping transformers reads from
+config.json, so the browser needs names keyed by the ViT output index instead.
 
 Japanese names come from YGOJSON (github.com/iconmaster5326/YGOJSON, MIT
 licensed), which aggregates them from Yugipedia.
@@ -150,7 +154,7 @@ def export_cardnames():
             ja_matched += 1
         out[str(idx)] = entry
 
-    dest = OUT_DIR / "cardnames.json"
+    dest = OUT_DIR / "cardnames_onnx.json"
     with open(dest, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
 
@@ -162,5 +166,4 @@ if __name__ == "__main__":
     export_vit()
     export_cardnames()
     print("\nDone. All models saved to docs/models/.")
-    print("ygo_yolo.onnx and cardnames.json can be committed to git.")
-    print("vit_int8.onnx is >90MB — use Git LFS or host it externally (Hugging Face Hub).")
+    print("Upload them to the bucket under onnx_models/; nothing here is committed to git.")

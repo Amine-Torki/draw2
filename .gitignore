@@ -1,9 +1,6 @@
 # docs/models/ - put ONNX files here (see docs/export_models.py)
 # Weights are hosted externally (HuggingFace bucket) instead of committed.
-docs/models/*.onnx
-docs/models/card_labels_yugiscan.json
-
-!docs/models/cardnames.json
+docs/models/*
 !docs/models/.gitkeep
 
 __pycache__/
