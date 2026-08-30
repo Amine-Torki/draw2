@@ -137,6 +137,16 @@ const $ = id => document.getElementById(id);
 
 const T = (key, vars) => (window.t ? window.t(key, vars) : key);
 
+// cardnames.json carries EN/FR names per card (Flash's plain-string labels
+// are English-only). Only FR has a matching localized field on the site;
+// other site languages (JA...) fall back to EN, same as the console log.
+function cardNameFor(entry, index) {
+    if (typeof entry === "string") return entry.replace(/-\d+$/, "").replace(/-/g, " ");
+    if (!entry) return String(index);
+    const lang = (window.getLang?.() || "en").toUpperCase();
+    return entry[lang] || entry.EN || String(index);
+}
+
 function setLoadStatus(text, pct, hint = "") {
     const bar = $("lp-bar");
     if (bar) bar.style.width = pct + "%";
@@ -252,7 +262,7 @@ async function init() {
         enableInputs();
 
         const precisionLabel = { yugiscan: "Flash", fp16: "Medium", fp32: "Max" }[precision] || precision;
-        status(`Loaded ${precisionLabel}`);
+        status(T("runtime.model_downloaded", { model: precisionLabel }));
 
     } catch (err) {
         $("lp-bar")?.style.setProperty("width", "0%");
@@ -800,16 +810,7 @@ async function detectAndClassify(imageData, { showSteps = true, onDetections, on
         dbg(`  ViT done in ${(performance.now()-t1).toFixed(0)}ms`);
         croppedImages.push(corrected);
 
-        const topPreds  = top.map(({i,p}) => {
-            const entry = cardnames[String(i)];
-            let name = String(i);
-            if (typeof entry === "string") {
-                name = entry.replace(/-\d+$/, '').replace(/-/g, ' ');
-            } else if (entry && entry.EN) {
-                name = entry.EN;
-            }
-            return { name, p, i };
-        });
+        const topPreds  = top.map(({i,p}) => ({ name: cardNameFor(cardnames[String(i)], i), p, i }));
         dbg(`  Top-1: "${topPreds[0]?.name}" (${(topPreds[0]?.p*100).toFixed(1)}%)`);
         onCard?.(idx, detections.length, topPreds);
         allPredictions.push(topPreds);
@@ -850,8 +851,8 @@ async function runPipeline(imageData) {
     if ($("canvas-trail")) $("canvas-trail").hidden = false;
     try {
         const { detections, allPredictions, croppedImages } = await detectAndClassify(imageData, {
-            onDetections: dets => status(`Found ${dets.length} card${dets.length === 1 ? "" : "s"}`),
-            onCard: (idx, total, topPreds) => status(`Card ${idx+1}/${total}: "${topPreds[0]?.name}" (${((topPreds[0]?.p ?? 0)*100).toFixed(1)}%)`)
+            onDetections: dets => status(T("log.found_cards", { count: dets.length })),
+            onCard: (idx, total, topPreds) => status(T("log.card_progress", { idx: idx+1, total, name: topPreds[0]?.name, pct: ((topPreds[0]?.p ?? 0)*100).toFixed(1) }))
         });
 
         if (detections.length === 0) {
@@ -867,7 +868,7 @@ async function runPipeline(imageData) {
         if (grid) renderResultCards(grid, croppedImages, allPredictions);
         if (runRow) runRow.hidden = true;
         if (resultsEl) resultsEl.hidden = false;
-        status(`Done in ${(performance.now()-pipelineT0).toFixed(0)}ms`);
+        status(T("log.done_in", { ms: (performance.now()-pipelineT0).toFixed(0) }));
 
     } catch (err) {
         if (err.message === "Cancelled by user") {
@@ -1006,7 +1007,7 @@ function setupSampleButtons() {
             const type = btn.dataset.sampleType || "";
             const name = url.split("/").pop();
             try {
-                status(`Loading sample: ${name}...`);
+                status(T("log.loading_sample", { name }));
                 const res = await fetch(url);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const buf  = await res.arrayBuffer();
@@ -1085,13 +1086,7 @@ async function liveLoop(video) {
                     const crop = warpPerspective(imageData, det.pts, CROP_SIZE, CROP_SIZE);
                     if (!crop) { predictions.push([]); continue; }
                     const { top } = await classifyWithRotationFallback(crop);
-                    predictions.push(top.map(({i, p}) => {
-                        const entry = cardnames[String(i)];
-                        let name = String(i);
-                        if (typeof entry === "string") name = entry.replace(/-\d+$/, '').replace(/-/g, ' ');
-                        else if (entry && entry.EN) name = entry.EN;
-                        return { name, p, i };
-                    }));
+                    predictions.push(top.map(({i, p}) => ({ name: cardNameFor(cardnames[String(i)], i), p, i })));
                     await nextFrame(); // yield between cards so a busy scene doesn't freeze the tab
                 }
                 if (!liveActive) break;
@@ -1286,7 +1281,7 @@ async function processAnimated(file) {
 
     if (!window.GIF) {
         setRunLabel("Loading GIF encoder...");
-        status("Loading GIF encoder...");
+        status(T("log.loading_gif_encoder"));
         await new Promise(r => {
             const s = document.createElement("script");
             s.src = "https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js";
@@ -1318,7 +1313,7 @@ async function processAnimated(file) {
         const ctx = canvas.getContext("2d");
 
         const totalFrames = Math.floor(video.duration * EXTRACT_FPS);
-        status(`Extracting frames from video (${video.duration.toFixed(1)}s @ ${EXTRACT_FPS}fps, ${canvas.width}x${canvas.height})...`);
+        status(T("log.extract_video", { dur: video.duration.toFixed(1), fps: EXTRACT_FPS, w: canvas.width, h: canvas.height }));
         for (let i = 0; i < totalFrames; i++) {
             video.currentTime = i / EXTRACT_FPS;
             await new Promise(r => { video.onseeked = r; });
@@ -1328,7 +1323,7 @@ async function processAnimated(file) {
             dbgProgress("extract", "Extracting frames", i + 1, totalFrames);
         }
         dbgProgressDone("extract");
-        status(`Extraction done: ${frames.length} frames`);
+        status(T("log.extraction_done", { count: frames.length }));
     } else if (file.type === "image/gif") {
         if (!window.ImageDecoder) {
             alert("Your browser doesn't support GIF frame extraction (use Chrome or Edge).");
@@ -1341,7 +1336,7 @@ async function processAnimated(file) {
         await decoder.tracks.ready;
         const track = decoder.tracks.selectedTrack;
         const frameCount = Math.min(track.frameCount, 30);
-        status(`Extracting frames from GIF (${frameCount} frames)...`);
+        status(T("log.extract_gif", { count: frameCount }));
         for (let i = 0; i < frameCount; i++) {
             const result = await decoder.decode({ frameIndex: i });
             const vf = result.image;
@@ -1357,7 +1352,7 @@ async function processAnimated(file) {
             dbgProgress("extract", "Extracting frames", i + 1, frameCount);
         }
         dbgProgressDone("extract");
-        status(`Extraction done: ${frames.length} frames`);
+        status(T("log.extraction_done", { count: frames.length }));
     }
 
     if (frames.length === 0) { if (runRow) runRow.hidden = true; if ($("canvas-wrap")) $("canvas-wrap").hidden = true; resetUI(); return; }
@@ -1369,7 +1364,7 @@ async function processAnimated(file) {
     if (keyIndices[keyIndices.length - 1] !== frames.length - 1) keyIndices.push(frames.length - 1);
 
     const keyResults = new Map();
-    status(`Running detection on ${keyIndices.length} key frame(s)...`);
+    status(T("log.running_detection", { count: keyIndices.length }));
     for (let k = 0; k < keyIndices.length; k++) {
         if (cancelRequested) break;
         const idx = keyIndices[k];
@@ -1381,7 +1376,7 @@ async function processAnimated(file) {
     }
     dbgProgressDone("infer");
     if (cancelRequested) { cancelCleanup(); return; }
-    status(`Key frame detection done`);
+    status(T("log.keyframe_done"));
 
     function nearestKey(i) {
         let best = keyIndices[0], bestDist = Infinity;
@@ -1411,7 +1406,7 @@ async function processAnimated(file) {
     const gifFrameCtx = gifFrameCanvas.getContext("2d");
 
     const canvasOut = $("canvas-out");
-    status(`Rendering ${frames.length} frame(s)...`);
+    status(T("log.rendering_frames", { count: frames.length }));
     for (let i = 0; i < frames.length; i++) {
         if (cancelRequested) break;
         const { detections, allPredictions } = keyResults.get(nearestKey(i)) || { detections: [], allPredictions: [] };
@@ -1434,7 +1429,7 @@ async function processAnimated(file) {
     }
     dbgProgressDone("render");
     if (cancelRequested) { cancelCleanup(); return; }
-    status(`Frame rendering done`);
+    status(T("log.frame_rendering_done"));
 
     } finally {
         window.__bgAnim?.resume();
@@ -1442,11 +1437,11 @@ async function processAnimated(file) {
     }
 
     setRunLabel("Encoding output GIF...");
-    status("Encoding output GIF...");
+    status(T("log.encoding_gif"));
     gif.on("finished", function(blob) {
         setRunLabel("Engine Ready");
         if (runRow) runRow.hidden = true;
-        status(`GIF ready (${(blob.size/1024).toFixed(0)} KB)`);
+        status(T("log.gif_ready", { size: (blob.size/1024).toFixed(0) }));
         const cOut = document.getElementById("canvas-out");
         const existingImg = document.getElementById("gif-result");
         if (existingImg) existingImg.remove();

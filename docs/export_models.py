@@ -8,7 +8,10 @@ Run from the draw2 repo root with the venv active:
 Outputs (in docs/models/):
     ygo_yolo.onnx   (~20 MB)    — YOLO-OBB detector
     vit_int8.onnx   (~90 MB)    — ViT classifier, INT8 quantised
-    cardnames.json              — {card_id: {EN: ..., FR: ...}} mapping
+    cardnames.json              — {card_id: {EN, FR, JA: ...}} mapping
+
+Japanese names come from YGOJSON (github.com/iconmaster5326/YGOJSON, MIT
+licensed), which aggregates them from Yugipedia.
 
 Requirements:
     pip install ultralytics transformers onnx onnxruntime torch
@@ -77,6 +80,34 @@ def export_vit():
 
 
 
+def fetch_ygojson_ja_names():
+    """
+    card_id (str, unpadded) -> Japanese name, sourced from YGOJSON's
+    aggregate cards.json (MIT licensed, aggregates Yugipedia). YGOJSON pads
+    passwords with leading zeros, so we normalize before indexing.
+    """
+    import io
+    import zipfile
+
+    import requests
+
+    url = "https://github.com/iconmaster5326/YGOJSON/releases/download/v1/aggregate.zip"
+    resp = requests.get(url, timeout=120)
+    resp.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        cards = json.loads(z.read("cards.json"))
+
+    pw_to_ja = {}
+    for card in cards:
+        ja = (card.get("text", {}).get("ja") or {}).get("name")
+        if not ja:
+            continue
+        for pw in card.get("passwords", []):
+            key = str(int(pw))
+            pw_to_ja.setdefault(key, ja)
+    return pw_to_ja
+
+
 def export_cardnames():
     """
     cardnames.json from draw.py maps card_id (str) -> {EN:..., FR:...}.
@@ -88,7 +119,6 @@ def export_cardnames():
     """
     print("\n=== Exporting card names ===")
     from transformers import AutoConfig
-    import requests
 
     config = AutoConfig.from_pretrained("HichTala/draw2")
     id2label = config.id2label  # {int: "CardName-card_id"}
@@ -98,24 +128,33 @@ def export_cardnames():
     with open(raw_path, "r", encoding="utf-8") as f:
         cardnames_raw = json.load(f)  # {card_id: {EN: ..., FR: ...}}
 
+    print("  Fetching Japanese names from YGOJSON...")
+    pw_to_ja = fetch_ygojson_ja_names()
+
     out = {}
+    ja_matched = 0
     for idx, label_str in id2label.items():
         parts = label_str.rsplit("-", 1)
         card_id = parts[-1] if len(parts) == 2 else ""
         name_raw = parts[0] if len(parts) == 2 else label_str
         card_data = cardnames_raw.get(card_id, {})
-        out[str(idx)] = {
+        entry = {
             "EN": card_data.get("EN") or name_raw.replace("-", " "),
             "FR": card_data.get("FR") or name_raw.replace("-", " "),
             "card_id": card_id,
             "label": label_str,
         }
+        ja = pw_to_ja.get(card_id)
+        if ja:
+            entry["JA"] = ja
+            ja_matched += 1
+        out[str(idx)] = entry
 
     dest = OUT_DIR / "cardnames.json"
     with open(dest, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
 
-    print(f"  Saved: {dest}  ({dest.stat().st_size / 1e3:.0f} kB, {len(out)} entries)")
+    print(f"  Saved: {dest}  ({dest.stat().st_size / 1e3:.0f} kB, {len(out)} entries, {ja_matched} with JA)")
 
 
 if __name__ == "__main__":
