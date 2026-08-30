@@ -300,6 +300,7 @@ function enableInputs() {
     const dz = $("dropzone");
     dz.removeAttribute("data-disabled");
     dz.setAttribute("tabindex", "0");
+    $("dropzone-lock")?.setAttribute("hidden", "");
     document.querySelectorAll(".sample-btn").forEach(b => b.disabled = false);
 
     // Small (WASM) stutters too badly for live mode; Medium/Max run on WebGPU.
