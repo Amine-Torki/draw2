@@ -19,7 +19,7 @@ const STD  = [0.5, 0.5, 0.5];
 let yoloSession = null;
 let vitSession  = null;
 let cardnames   = {};
-let cardId2Names = {}; // card_id -> {EN,FR,JA,...}, for Flash's plain-string labels
+let cardId2Names = {}; // card_id -> {EN,FR,JA,...}, for Small's plain-string labels
 let modelsReady = false;
 let currentStream = null;
 let cancelRequested = false;
@@ -138,7 +138,7 @@ const $ = id => document.getElementById(id);
 
 const T = (key, vars) => (window.t ? window.t(key, vars) : key);
 
-// Flash's labels are plain strings; cross-reference cardId2Names for those.
+// Small's labels are plain strings; cross-reference cardId2Names for those.
 function localizedName(entry) {
     const lang = (window.getLang?.() || "en").toUpperCase();
     return entry[lang] || entry.EN;
@@ -276,7 +276,7 @@ async function init() {
         modelsReady = true;
         enableInputs();
 
-        const precisionLabel = { yugiscan: "Flash", fp16: "Medium", fp32: "Max" }[precision] || precision;
+        const precisionLabel = { yugiscan: "Small", fp16: "Medium", fp32: "Max" }[precision] || precision;
         status(T("runtime.model_downloaded", { model: precisionLabel }));
 
     } catch (err) {
@@ -302,7 +302,7 @@ function enableInputs() {
     dz.setAttribute("tabindex", "0");
     document.querySelectorAll(".sample-btn").forEach(b => b.disabled = false);
 
-    // Flash (WASM) stutters too badly for live mode; Medium/Max run on WebGPU.
+    // Small (WASM) stutters too badly for live mode; Medium/Max run on WebGPU.
     const btnLive = $("btn-live");
     if (btnLive) {
         const liveOk = currentPrecision === "fp32" || currentPrecision === "fp16";
