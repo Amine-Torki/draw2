@@ -19,6 +19,7 @@ const STD  = [0.5, 0.5, 0.5];
 let yoloSession = null;
 let vitSession  = null;
 let cardnames   = {};
+let cardId2Names = {}; // card_id -> {EN,FR,JA,...}, for Flash's plain-string labels
 let modelsReady = false;
 let currentStream = null;
 let cancelRequested = false;
@@ -137,14 +138,20 @@ const $ = id => document.getElementById(id);
 
 const T = (key, vars) => (window.t ? window.t(key, vars) : key);
 
-// cardnames.json carries EN/FR names per card (Flash's plain-string labels
-// are English-only). Only FR has a matching localized field on the site;
-// other site languages (JA...) fall back to EN, same as the console log.
-function cardNameFor(entry, index) {
-    if (typeof entry === "string") return entry.replace(/-\d+$/, "").replace(/-/g, " ");
-    if (!entry) return String(index);
+// Flash's labels are plain strings; cross-reference cardId2Names for those.
+function localizedName(entry) {
     const lang = (window.getLang?.() || "en").toUpperCase();
-    return entry[lang] || entry.EN || String(index);
+    return entry[lang] || entry.EN;
+}
+function cardNameFor(entry, index) {
+    if (typeof entry === "string") {
+        const cardId = entry.match(/-(\d+)$/)?.[1];
+        const localized = cardId && cardId2Names[cardId];
+        if (localized) return localizedName(localized);
+        return entry.replace(/-\d+$/, "").replace(/-/g, " ");
+    }
+    if (!entry) return String(index);
+    return localizedName(entry) || String(index);
 }
 
 function setLoadStatus(text, pct, hint = "") {
@@ -240,6 +247,14 @@ async function init() {
 
         const labelsBuf = await fetchWithProgress(namesUrl, "Downloading card DB", 92, 100, signal);
         cardnames = JSON.parse(new TextDecoder().decode(labelsBuf));
+
+        if (precision === "yugiscan" && Object.keys(cardId2Names).length === 0) {
+            const namesBuf = await fetch(NAMES_URL, { signal }).then(r => r.arrayBuffer());
+            const localized = JSON.parse(new TextDecoder().decode(namesBuf));
+            for (const entry of Object.values(localized)) {
+                if (entry?.card_id) cardId2Names[entry.card_id] = entry;
+            }
+        }
 
         setLoadStatus(T("runtime.warming_up"), 98, "");
         // WebGPU compiles shader pipelines on first real use, not at session
