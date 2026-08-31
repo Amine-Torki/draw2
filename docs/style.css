@@ -1,0 +1,171 @@
+@charset "UTF-8";
+
+body {
+  font-family: 'Outfit', sans-serif;
+  margin: 0; overflow-x: hidden;
+}
+
+/* Background Canvas */
+#bg-canvas { position: fixed; inset: 0; z-index: -1; width: 100vw; height: 100vh; pointer-events: none; transition: filter 500ms; }
+html:not(.dark) #bg-canvas { filter: invert(1) hue-rotate(180deg) opacity(0.5); }
+
+/* Glass Bento Box */
+.glass-bento {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 32px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 32px rgba(0, 0, 0, 0.05);
+  transition: transform 250ms cubic-bezier(0.23, 1, 0.32, 1),
+              border-color 250ms cubic-bezier(0.23, 1, 0.32, 1),
+              box-shadow 250ms cubic-bezier(0.23, 1, 0.32, 1),
+              background-color 500ms ease;
+}
+html.dark .glass-bento {
+  background: rgba(20, 20, 25, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .glass-bento:hover {
+    transform: translateY(-4px);
+    border-color: rgba(0, 0, 0, 0.1);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 12px 48px rgba(0, 0, 0, 0.1);
+  }
+  html.dark .glass-bento:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 12px 48px rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* Polished Interactive Elements */
+.btn {
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background-color 200ms ease, color 200ms ease;
+}
+.btn:active {
+  transform: scale(0.97);
+}
+
+/* Staggered Entrance */
+.stagger-item {
+  opacity: 0;
+  transform: translateY(20px);
+  animation: enter-bento 500ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+@keyframes enter-bento {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.d-1 { animation-delay: 50ms; }
+.d-2 { animation-delay: 100ms; }
+.d-3 { animation-delay: 150ms; }
+.d-4 { animation-delay: 200ms; }
+.d-5 { animation-delay: 250ms; }
+.d-6 { animation-delay: 300ms; }
+
+/* BorderTrail: a light beam patrolling the button's edge (leaguequest recipe) */
+.trail-gutter {
+  --trail-color: #34d399;
+  position: relative;
+  padding: 3px;
+  border-radius: 9999px;
+  overflow: hidden;
+  display: inline-block;
+}
+.border-trail {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 20;
+  overflow: hidden;
+}
+.border-trail .patrol-wrap {
+  position: absolute;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  animation: patrol-move 10s linear infinite;
+}
+.border-trail .patrol-spin {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  animation: patrol-rotate 10s linear infinite;
+}
+.border-trail .patrol-beam {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 300%;
+  height: 300%;
+  background: conic-gradient(from 270deg, transparent 60deg, var(--trail-color, #34d399) 90deg, transparent 120deg);
+}
+.border-trail .mobile-spin-wrap {
+  display: none;
+}
+@keyframes patrol-move {
+  0%   { left: 0;    transform: translateX(0); }
+  45%  { left: 100%; transform: translateX(-100%); }
+  50%  { left: 100%; transform: translateX(-100%); }
+  95%  { left: 0;    transform: translateX(0); }
+  100% { left: 0;    transform: translateX(0); }
+}
+@keyframes patrol-rotate {
+  0% { transform: rotate(315deg); } 5% { transform: rotate(360deg); }
+  30% { transform: rotate(360deg); } 65% { transform: rotate(540deg); }
+  80% { transform: rotate(540deg); } 100% { transform: rotate(675deg); }
+}
+@keyframes trail-spin { to { transform: rotate(360deg); } }
+@media (max-width: 767px) {
+  .border-trail .patrol-wrap { display: none; }
+  .border-trail .mobile-spin-wrap {
+    display: block;
+    position: absolute;
+    height: 100%;
+    aspect-ratio: 1 / 1;
+    left: 50%;
+    transform: translateX(-50%);
+    animation: trail-spin 5s linear infinite;
+  }
+  .border-trail .mobile-spin-beam {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 200%;
+    height: 200%;
+    background: conic-gradient(from 0deg, transparent 0deg, var(--trail-color, #34d399) 60deg, transparent 120deg);
+  }
+}
+
+/* Custom Scrollbar for inner elements */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(150, 150, 150, 0.3); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(150, 150, 150, 0.5); }
+html.dark ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); }
+html.dark ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+
+/* Execution panel starts empty (no webcam, no rendered output yet): show a
+   resting placeholder so the right column never looks broken. Hidden as
+   soon as either real view becomes visible. */
+#execution-panel:has(#webcam-wrap:not([hidden])) #output-placeholder,
+#execution-panel:has(#canvas-wrap:not([hidden])) #output-placeholder {
+  display: none;
+}
+#execution-panel:has(#results:not([hidden])) #results-placeholder {
+  display: none;
+}
+
+.font-display {
+  font-family: 'Outfit', sans-serif;
+}
+
+/* Force native hidden attribute over Tailwind utility classes */
+[hidden] {
+  display: none !important;
+}
