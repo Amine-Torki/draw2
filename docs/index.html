@@ -30,7 +30,7 @@
   </script>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <script src="i18n.js"></script>
+  <script src="scripts/i18n.js"></script>
 
 </head>
 <body class="p-6 md:p-12 selection:bg-emerald-500/30 bg-zinc-50 dark:bg-black text-zinc-900 dark:text-white transition-colors duration-500">
@@ -314,155 +314,12 @@
     </button>
   </div>
 
-  <script>
-    document.getElementById('theme-toggle').addEventListener('click', () => {
-      document.documentElement.classList.toggle('dark');
-    });
-    const langToggle = document.getElementById('lang-toggle');
-    const langMenu = document.getElementById('lang-menu');
-    function closeLangMenu() { langMenu.hidden = true; }
-    function markActiveLang() {
-      langMenu.querySelectorAll('.lang-option').forEach(opt => {
-        opt.classList.toggle('bg-black/5', opt.dataset.lang === window.getLang());
-        opt.classList.toggle('dark:bg-white/10', opt.dataset.lang === window.getLang());
-      });
-    }
-    langToggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      markActiveLang();
-      langMenu.hidden = !langMenu.hidden;
-    });
-    langMenu.addEventListener('click', (e) => {
-      const opt = e.target.closest('.lang-option');
-      if (!opt) return;
-      window.setLang(opt.dataset.lang);
-      closeLangMenu();
-    });
-    document.addEventListener('click', (e) => {
-      if (!langMenu.hidden && !langMenu.contains(e.target) && e.target !== langToggle) closeLangMenu();
-    });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLangMenu(); });
-  </script>
+  <script src="scripts/header-buttons.js"></script>
 
-  <script type="module">
-    import * as THREE from 'https://esm.sh/three@0.160.0';
-    const container = document.getElementById('bg-canvas');
-    const vertexShader = `void main() { gl_Position = vec4(position, 1.0); }`;
-    const fragmentShader = `
-      precision highp float; uniform vec2 resolution; uniform float time;
-      void main(void) {
-        vec2 uv = (gl_FragCoord.xy * 2.0 - resolution.xy) / min(resolution.x, resolution.y);
-        float t = time * 0.05; vec3 color = vec3(0.0);
-        for (int j = 0; j < 3; j++) {
-          for (int i = 0; i < 5; i++) {
-            color[j] += 0.002 * float(i * i) / abs(fract(t - 0.01 * float(j) + float(i) * 0.01) * 5.0 - length(uv) + mod(uv.x + uv.y, 0.2));
-          }
-        }
-        float mono = (color.r + color.g + color.b) / 3.0;
-        vec3 finalColor = mix(color, mono * vec3(0.1, 0.5, 0.3), 1.0);
-        gl_FragColor = vec4(finalColor * 0.6, 1.0);
-      }
-    `;
-    const scene = new THREE.Scene(); const camera = new THREE.Camera(); camera.position.z = 1;
-    const material = new THREE.ShaderMaterial({ uniforms: { time: { value: 1.0 }, resolution: { value: new THREE.Vector2() } }, vertexShader, fragmentShader });
-    scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio); container.appendChild(renderer.domElement);
-    const onResize = () => { renderer.setSize(container.clientWidth, container.clientHeight); material.uniforms.resolution.value.x = renderer.domElement.width; material.uniforms.resolution.value.y = renderer.domElement.height; };
-    onResize(); window.addEventListener("resize", onResize);
-
-    // Pause animation when tab is hidden or inference is running
-    let rafId = null;
-    let inferencePaused = false;
-    const animate = () => {
-        rafId = requestAnimationFrame(animate);
-        material.uniforms.time.value += 0.03;
-        renderer.render(scene, camera);
-    };
-    function syncAnimation() {
-        const shouldRun = !document.hidden && !inferencePaused;
-        if (shouldRun && !rafId) animate();
-        if (!shouldRun && rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    }
-    renderer.render(scene, camera); // paint one frame immediately either way
-    syncAnimation();
-    document.addEventListener("visibilitychange", syncAnimation);
-
-    // pipeline.js calls this around inference; it knows nothing about Three.js.
-    window.__bgAnim = {
-        pause()  {
-            inferencePaused = true;
-            syncAnimation();
-            material.uniforms.time.value = 1.0; // reset to frame 1, not a mid-motion freeze
-            renderer.render(scene, camera);
-        },
-        resume() { inferencePaused = false; syncAnimation(); }
-    };
-  </script>
+  <script src="scripts/annimations.js" type="module"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
-  <script src="pipeline.js"></script>
-  <script>
-    // Speech-bubble tooltip, appended to <body> (fixed position) so it can
-    // float above a card without being clipped by its overflow-hidden.
-    let cardTooltip = null;
-    function getCardTooltip() {
-      if (cardTooltip) return cardTooltip;
-      cardTooltip = document.createElement('div');
-      cardTooltip.className = 'fixed z-50 bg-zinc-900 text-white text-[11px] font-semibold px-2.5 py-1.5 rounded-lg shadow-lg opacity-0 pointer-events-none transition-opacity duration-150 max-w-[180px] text-center';
-      cardTooltip.innerHTML = '<span class="tooltip-text"></span><span class="absolute left-1/2 top-full -translate-x-1/2 w-0 h-0 border-x-4 border-x-transparent border-t-4 border-t-zinc-900"></span>';
-      document.body.appendChild(cardTooltip);
-      return cardTooltip;
-    }
-    function showCardTooltip(el, text) {
-      const tip = getCardTooltip();
-      tip.querySelector('.tooltip-text').textContent = text;
-      const rect = el.getBoundingClientRect();
-      tip.style.left = (rect.left + rect.width / 2) + 'px';
-      tip.style.top = (rect.top - 8) + 'px';
-      tip.style.transform = 'translate(-50%, -100%)';
-      tip.style.opacity = '1';
-    }
-    function hideCardTooltip() {
-      if (cardTooltip) cardTooltip.style.opacity = '0';
-    }
-
-    const observer = new MutationObserver(() => {
-      hideCardTooltip();
-      const grid = document.getElementById('cards-grid');
-      Array.from(grid.children).forEach(el => {
-        if(!el.classList.contains('polished')) {
-          const meta = el.children[1];
-          const nameEl = meta.children[0];
-          const scoreEl = meta.children[1];
-          const cardName = nameEl.textContent;
-
-          // Master container: clean borderless rectangle, forced aspect ratio
-          el.className = 'relative polished opacity-0 hover:z-10 cursor-pointer overflow-hidden rounded shadow-sm border border-black/5 dark:border-white/10 group w-full aspect-[59/86] shrink-0';
-          el.animate([
-            { opacity: 0, transform: 'scale(0.9)' },
-            { opacity: 1, transform: 'scale(1)' }
-          ], { duration: 250, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', fill: 'forwards' });
-
-          // Image crop (stretched back to physical card ratio)
-          const canvas = el.children[0];
-          canvas.className = 'absolute inset-0 w-full h-full object-fill transition-transform duration-500 group-hover:scale-110';
-
-          // Hide original meta container
-          meta.style.display = 'none';
-
-          // Overlapping score
-          const badge = document.createElement('div');
-          badge.className = 'absolute top-0 left-0 bg-black/80 backdrop-blur text-emerald-400 font-mono text-[9px] font-bold px-1.5 py-0.5 rounded-br pointer-events-none';
-          badge.textContent = scoreEl.textContent;
-          el.appendChild(badge);
-
-          el.addEventListener('mouseenter', () => showCardTooltip(el, cardName));
-          el.addEventListener('mouseleave', hideCardTooltip);
-        }
-      });
-    });
-    observer.observe(document.getElementById('cards-grid'), { childList: true });
-  </script>
+  <script src="scripts/pipeline.js"></script>
+  <script src="scripts/card-display.js"></script>
 </body>
 </html>
