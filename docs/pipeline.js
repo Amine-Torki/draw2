@@ -1,7 +1,7 @@
 // Config
 // Hosted ONNX artifacts. cardnames_onnx.json is the ViT-index-keyed variant
 // built by export_models.py; the card_id-keyed one lives on the model repo.
-const BUCKET = "https://huggingface.co/buckets/Aminoquiz/draw2-bucket/resolve/onnx_models";
+const BUCKET = "https://huggingface.co/HichTala/draw2/resolve/main/onnx";
 const NAMES_URL           = `${BUCKET}/cardnames_onnx.json?download=true`;
 const YOLO_URL            = `${BUCKET}/ygo_yolo.onnx?download=true`;
 const VIT_FP32_URL        = `${BUCKET}/vit_fp32.onnx?download=true`;
