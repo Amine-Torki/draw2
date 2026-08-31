@@ -1,6 +1,6 @@
 <div align="center">
     <p>
-        <img src="figures/banner-draw.png" alt="Banner of DRAW2 project">
+        <img src="docs/assets/banner.png" alt="Banner of DRAW2 project">
     </p>
 
 

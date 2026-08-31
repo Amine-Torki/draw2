@@ -1,6 +1,6 @@
 <div align="center">
     <p>
-        <img src="../figures/banner-draw.png"  alt="DRAW 2 プロジェクトのバナーロゴ">
+        <img src="../docs/assets/banner.png"  alt="DRAW 2 プロジェクトのバナーロゴ">
     </p>
 
 <div>
