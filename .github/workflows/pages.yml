@@ -29,10 +29,13 @@ jobs:
 
       - name: Minify JS and CSS
         run: |
-          npx --yes terser docs/i18n.js -c -m -o /tmp/i18n.js
-          npx --yes terser docs/pipeline.js -c -m -o /tmp/pipeline.js
-          mv /tmp/i18n.js docs/i18n.js
-          mv /tmp/pipeline.js docs/pipeline.js
+          mkdir -p docs/script
+          shopt -s nullglob
+          for file in script/*.js; do
+            name="$(basename "$file")"
+            npx --yes terser "$file" -c -m -o "/tmp/$name"
+            mv "/tmp/$name" "docs/script/$name"
+          done
           npx --yes lightningcss-cli --minify docs/style.css -o /tmp/style.css
           mv /tmp/style.css docs/style.css
           npx --yes html-minifier-terser \
