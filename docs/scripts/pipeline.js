@@ -232,7 +232,7 @@ async function init() {
             logSeverityLevel: 3
         });
 
-        const vitSize = precision === "fp32" ? "386 MB" : precision === "fp16" ? "193 MB" : "40 MB";
+        const vitSize = precision === "fp32" ? "386 MB" : precision === "fp16" ? "193 MB" : "98 MB";
         setLoadStatus(T("runtime.dl_vit", { size: vitSize }), 32, "");
         const vitBuf = await fetchWithProgress(
             vitUrl, T("runtime.dl_vit", { size: vitSize }), 32, 92, signal
