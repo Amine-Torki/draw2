@@ -667,14 +667,16 @@ function rotateImageData(imageData, degrees) {
 }
 
 // Drawing & UI
-function drawDetections(ctx, refWidth, detections, predictions) {
+function drawDetections(ctx, refWidth, detections, predictions, highlight = -1) {
     detections.forEach(({pts},idx) => {
+        const dimmed = highlight >= 0 && idx !== highlight;
+        ctx.globalAlpha = dimmed ? 0.25 : 1;
         ctx.beginPath();
         ctx.moveTo(pts[0].x,pts[0].y);
         for (let i=1;i<4;i++) ctx.lineTo(pts[i].x,pts[i].y);
         ctx.closePath();
-        ctx.strokeStyle="#c8a95e";
-        ctx.lineWidth=Math.max(2,refWidth/400);
+        ctx.strokeStyle = idx === highlight ? "#10b981" : "#c8a95e";
+        ctx.lineWidth=Math.max(2,refWidth/400) * (idx === highlight ? 2 : 1);
         ctx.stroke();
 
         if (predictions[idx]?.[0]) {
@@ -686,10 +688,11 @@ function drawDetections(ctx, refWidth, detections, predictions) {
             const tw=ctx.measureText(name).width;
             ctx.fillStyle="rgba(0,0,0,.65)";
             ctx.fillRect(topX-2,topY-fs-4,tw+8,fs+6);
-            ctx.fillStyle="#c8a95e";
+            ctx.fillStyle = idx === highlight ? "#10b981" : "#c8a95e";
             ctx.fillText(name,topX+2,topY-4);
         }
     });
+    ctx.globalAlpha = 1;
 }
 
 function drawOverlay(canvas, srcImage, detections, predictions) {
@@ -716,7 +719,7 @@ function getResultAspect() {
     }
     return 16 / 9;
 }
-function drawOverlayLetterboxed(canvas, srcImage, detections, predictions) {
+function drawOverlayLetterboxed(canvas, srcImage, detections, predictions, highlight = -1) {
     const targetAspect = getResultAspect();
     const srcAspect = srcImage.width / srcImage.height;
     const canvasW = srcAspect > targetAspect ? srcImage.width : Math.round(srcImage.height * targetAspect);
@@ -732,12 +735,63 @@ function drawOverlayLetterboxed(canvas, srcImage, detections, predictions) {
     const offsetY = Math.round((canvasH - srcImage.height) / 2);
     const bmp = imageDataToBitmap(srcImage);
     ctx.drawImage(bmp, offsetX, offsetY);
-    bmp.close();
 
     ctx.save();
     ctx.translate(offsetX, offsetY);
-    drawDetections(ctx, srcImage.width, detections, predictions);
+
+    // Grey the other cards inside their own quad, so the highlight reads on the
+    // image itself rather than on the outline alone. Clipped redraw of the same
+    // bitmap: ctx.filter is ignored where unsupported, which just means no
+    // desaturation instead of a broken frame.
+    if (highlight >= 0) {
+        for (let i = 0; i < detections.length; i++) {
+            if (i === highlight) continue;
+            const pts = detections[i].pts;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let k = 1; k < 4; k++) ctx.lineTo(pts[k].x, pts[k].y);
+            ctx.closePath();
+            ctx.clip();
+            ctx.filter = "grayscale(1)";
+            ctx.drawImage(bmp, 0, 0);
+            ctx.restore();
+        }
+    }
+
+    drawDetections(ctx, srcImage.width, detections, predictions, highlight);
     ctx.restore();
+    bmp.close();
+}
+
+// Set by the still-image path only. Hovering a result card redraws the output
+// with that detection picked out; on an animated run the canvas shows a
+// different frame, so the mapping would be wrong.
+let hoverSource = null;
+
+const HOVER_LINGER_MS = 250;
+let hoverTimer = null;
+
+function applyHover(idx) {
+    if (hoverSource) {
+        const { canvas, imageData, detections, predictions } = hoverSource;
+        drawOverlayLetterboxed(canvas, imageData, detections, predictions, idx);
+    }
+    const grid = $("cards-grid");
+    if (!grid) return;
+    for (const el of grid.children) {
+        const off = idx >= 0 && Number(el.dataset.det) !== idx;
+        el.style.filter  = off ? "grayscale(0.85)" : "";
+        el.style.opacity = off ? "0.5" : "";
+    }
+}
+
+function highlightDetection(idx) {
+    clearTimeout(hoverTimer);
+    if (idx >= 0) { applyHover(idx); return; }
+    // Moving from one card to the next fires leave before enter, so clearing
+    // at once makes the whole panel flash between every pair of cards.
+    hoverTimer = setTimeout(() => applyHover(-1), HOVER_LINGER_MS);
 }
 
 //  RESULT CARDS 
@@ -755,7 +809,9 @@ function renderResultCards(grid, croppedImages, predictions) {
         const score=top ? (top.p*100).toFixed(1)+"%" : "";
 
         const item=document.createElement("div");
-        item.className="flex bg-white border border-zinc-200 rounded overflow-hidden shadow-sm hover:shadow-md transition-shadow group";
+        item.className="flex bg-white border border-zinc-200 rounded overflow-hidden shadow-sm hover:shadow-md group";
+        item.style.transition = "box-shadow .2s, filter .15s, opacity .15s";
+        item.dataset.det = idx;
 
         const cc=document.createElement("canvas");
         cc.width=CROP_SIZE; cc.height=CROP_SIZE; cc.className="w-24 h-24 object-contain bg-zinc-900 shrink-0 border-r border-zinc-200";
@@ -783,6 +839,8 @@ function renderResultCards(grid, croppedImages, predictions) {
             openCompare(cropData, preds);
         };
         item.addEventListener("click", open);
+        item.addEventListener("mouseenter", () => highlightDetection(idx));
+        item.addEventListener("mouseleave", () => highlightDetection(-1));
         item.addEventListener("keydown", e => {
             if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
         });
@@ -800,17 +858,24 @@ function renderResultCards(grid, croppedImages, predictions) {
 // Shows the detected crop against the official artwork of a candidate, so a
 // prediction can be judged on the image rather than on a name the user may
 // not recognise. Clicking a runner-up swaps the right pane.
+// Native size of a YGOPRODeck card image, so both panes share one shape
+const CARD_ART_W = 421, CARD_ART_H = 614;
 const ALT_RELEVANCE_RATIO = 0.1; // a runner-up must reach 10% of the top score
 
 function openCompare(cropData, predictions) {
     const viewer = $("compare-viewer");
     if (!viewer || !predictions?.length) return;
 
+    // The crop is a card warped into a square, so showing it as-is puts a
+    // flattened card next to a correctly proportioned one. Undo the squeeze by
+    // redrawing it at the artwork's own proportions.
     const cropCanvas = $("cmp-crop");
     if (cropCanvas && cropData) {
-        cropCanvas.width = cropData.width;
-        cropCanvas.height = cropData.height;
-        cropCanvas.getContext("2d").putImageData(cropData, 0, 0);
+        cropCanvas.width = CARD_ART_W;
+        cropCanvas.height = CARD_ART_H;
+        const bmp = imageDataToBitmap(cropData);
+        cropCanvas.getContext("2d").drawImage(bmp, 0, 0, CARD_ART_W, CARD_ART_H);
+        bmp.close();
     }
 
     const art     = $("cmp-art");
@@ -1007,6 +1072,7 @@ async function runPipeline(imageData) {
 
         dbg("Rendering overlay");
         if (canvasOut) drawOverlayLetterboxed(canvasOut, imageData, detections, allPredictions);
+        hoverSource = canvasOut ? { canvas: canvasOut, imageData, detections, predictions: allPredictions } : null;
         if (grid) renderResultCards(grid, croppedImages, allPredictions);
         if (runRow) runRow.hidden = true;
         if (resultsEl) resultsEl.hidden = false;
@@ -1061,6 +1127,7 @@ function hideDropzoneOnLoad() {
 }
 
 function resetUI() {
+    hoverSource = null;
     if ($("canvas-wrap")) $("canvas-wrap").hidden = true;
     if ($("results")) $("results").hidden = true;
     if ($("running-row")) $("running-row").hidden = true;
@@ -1404,6 +1471,7 @@ async function processAnimated(file) {
     const g = $("gif-result"); if (g) g.remove();
     const dl = $("gif-dl"); if (dl) dl.remove();
     if ($("results")) $("results").hidden = true; // don't carry over the last run's cards
+    hoverSource = null; // the canvas will be showing frames, not the hovered image
     if ($("canvas-out")) $("canvas-out").style.display = "";
     if ($("canvas-wrap")) $("canvas-wrap").hidden = false;
     const runRow = $("running-row");
