@@ -1279,6 +1279,7 @@ const INFERENCE_FPS = 5;
 async function processAnimated(file) {
     const g = $("gif-result"); if (g) g.remove();
     const dl = $("gif-dl"); if (dl) dl.remove();
+    if ($("results")) $("results").hidden = true; // don't carry over the last run's cards
     if ($("canvas-out")) $("canvas-out").style.display = "";
     if ($("canvas-wrap")) $("canvas-wrap").hidden = false;
     const runRow = $("running-row");
@@ -1291,6 +1292,10 @@ async function processAnimated(file) {
         if ($("canvas-wrap")) $("canvas-wrap").hidden = true;
         resetUI();
     }
+
+    // Declared here, not in the try below: gif.on/gif.render run after that
+    // block's finally, where a block-scoped binding would be out of scope.
+    let gif;
 
     window.__bgAnim?.pause();
     if ($("canvas-trail")) $("canvas-trail").hidden = false;
@@ -1309,6 +1314,14 @@ async function processAnimated(file) {
 
     setRunLabel("Extracting frames...");
     const frames = [];
+
+    // Extraction takes seconds; show frame 0 as soon as it exists so the
+    // capsule is filled at the right size immediately, like a still image.
+    const previewTarget = $("canvas-out");
+    function previewFirstFrame() {
+        if (frames.length !== 1 || !previewTarget) return;
+        drawOverlayLetterboxed(previewTarget, frames[0], [], []);
+    }
 
     if (file.type.startsWith("video/")) {
         const video = document.createElement("video");
@@ -1336,6 +1349,7 @@ async function processAnimated(file) {
             await new Promise(r => { video.onseeked = r; });
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             frames.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+            previewFirstFrame();
             setRunLabel(`Extracting frames (${i+1}/${totalFrames})...`);
             dbgProgress("extract", "Extracting frames", i + 1, totalFrames);
         }
@@ -1351,6 +1365,10 @@ async function processAnimated(file) {
         }
         const decoder = new ImageDecoder({ type: "image/gif", data: file.stream() });
         await decoder.tracks.ready;
+        // tracks.ready only means the track metadata arrived: frameCount keeps
+        // growing while the stream is parsed, so reading it here saw whatever
+        // had landed so far (3 of 30 on the sample clip).
+        await decoder.completed;
         const track = decoder.tracks.selectedTrack;
         const frameCount = Math.min(track.frameCount, 30);
         status(T("log.extract_gif", { count: frameCount }));
@@ -1365,6 +1383,7 @@ async function processAnimated(file) {
             ctx.drawImage(vf, 0, 0, canvas.width, canvas.height);
             frames.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
             vf.close();
+            previewFirstFrame();
             setRunLabel(`Extracting frames (${i+1}/${frameCount})...`);
             dbgProgress("extract", "Extracting frames", i + 1, frameCount);
         }
@@ -1381,15 +1400,26 @@ async function processAnimated(file) {
     if (keyIndices[keyIndices.length - 1] !== frames.length - 1) keyIndices.push(frames.length - 1);
 
     const keyResults = new Map();
+    // The results grid stayed empty for the whole animated path. Keep the crops
+    // of the first key frame that actually found something, so the panel shows
+    // the same cards a still image would.
+    let firstCards = null;
     status(T("log.running_detection", { count: keyIndices.length }));
     for (let k = 0; k < keyIndices.length; k++) {
         if (cancelRequested) break;
         const idx = keyIndices[k];
         setRunLabel(`Analyzing key frame ${k+1}/${keyIndices.length}...`);
-        const { detections, allPredictions } = await detectAndClassify(frames[idx], { showSteps: false });
+        const { detections, allPredictions, croppedImages } = await detectAndClassify(frames[idx], { showSteps: false });
         keyResults.set(idx, { detections, allPredictions });
+        if (!firstCards && detections.length) firstCards = { croppedImages, allPredictions };
         dbgProgress("infer", "Running detection", k + 1, keyIndices.length);
         await nextFrame();
+    }
+
+    if (firstCards) {
+        const grid = $("cards-grid");
+        if (grid) renderResultCards(grid, firstCards.croppedImages, firstCards.allPredictions);
+        if ($("results")) $("results").hidden = false;
     }
     dbgProgressDone("infer");
     if (cancelRequested) { cancelCleanup(); return; }
@@ -1404,12 +1434,18 @@ async function processAnimated(file) {
         return best;
     }
 
-    const outScale = Math.min(1.0, GIF_OUTPUT_SIDE / Math.max(frames[0].width, frames[0].height));
-    const gifW = Math.round(frames[0].width * outScale);
-    const gifH = Math.round(frames[0].height * outScale);
+    // Encode at the letterboxed aspect the frames were previewed at, so the
+    // finished GIF lands in the same capsule at the same size with no jump.
+    const boxAspect = getResultAspect();
+    const srcAspect = frames[0].width / frames[0].height;
+    const boxW = srcAspect > boxAspect ? frames[0].width  : Math.round(frames[0].height * boxAspect);
+    const boxH = srcAspect > boxAspect ? Math.round(frames[0].width / boxAspect) : frames[0].height;
+    const outScale = Math.min(1.0, GIF_OUTPUT_SIDE / Math.max(boxW, boxH));
+    const gifW = Math.round(boxW * outScale);
+    const gifH = Math.round(boxH * outScale);
     const workerStr = `importScripts("https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js");`;
     const blob = new Blob([workerStr], {type: "application/javascript"});
-    const gif = new GIF({
+    gif = new GIF({
         workers: 2,
         quality: 10,
         workerScript: URL.createObjectURL(blob),
@@ -1429,15 +1465,9 @@ async function processAnimated(file) {
         const { detections, allPredictions } = keyResults.get(nearestKey(i)) || { detections: [], allPredictions: [] };
         if (canvasOut) drawOverlayLetterboxed(canvasOut, frames[i], detections, allPredictions);
 
-        gifFrameCtx.clearRect(0, 0, gifW, gifH);
-        if (canvasOut) {
-            // canvasOut is letterboxed for on-page display; crop back out just
-            // the real frame (skip the black bars) so the exported GIF keeps
-            // the source's original aspect ratio, not the UI card's.
-            const cropX = Math.round((canvasOut.width - frames[i].width) / 2);
-            const cropY = Math.round((canvasOut.height - frames[i].height) / 2);
-            gifFrameCtx.drawImage(canvasOut, cropX, cropY, frames[i].width, frames[i].height, 0, 0, gifW, gifH);
-        }
+        gifFrameCtx.fillStyle = "#000";
+        gifFrameCtx.fillRect(0, 0, gifW, gifH);
+        if (canvasOut) gifFrameCtx.drawImage(canvasOut, 0, 0, gifW, gifH);
         gif.addFrame(gifFrameCanvas, {delay: Math.round(1000 / EXTRACT_FPS), copy: true});
 
         setRunLabel(`Rendering frame ${i+1}/${frames.length}...`);
@@ -1470,17 +1500,23 @@ async function processAnimated(file) {
         img.src = URL.createObjectURL(blob);
         img.className = cOut.className;
 
-        cOut.style.display = "none";
-        cOut.parentNode.insertBefore(img, cOut);
+        // Swap the canvas out and offer the download only once the GIF is
+        // actually decoded: doing it on src assignment shows the button over a
+        // frame that has not painted yet, which reads as "ready" too early.
+        img.addEventListener("load", () => {
+            cOut.style.display = "none";
 
-        const dl = document.createElement("a");
-        dl.id = "gif-dl";
-        dl.href = img.src;
-        dl.download = "draw2_prediction.gif";
-        dl.className = "absolute bottom-4 right-4 bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-lg hover:bg-emerald-400 z-50";
-        dl.textContent = T("runtime.download_gif");
-        img.parentNode.style.position = "relative";
-        img.parentNode.appendChild(dl);
+            const dl = document.createElement("a");
+            dl.id = "gif-dl";
+            dl.href = img.src;
+            dl.download = "draw2_prediction.gif";
+            dl.className = "absolute bottom-4 right-4 bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-lg hover:bg-emerald-400 z-50";
+            dl.textContent = T("runtime.download_gif");
+            img.parentNode.style.position = "relative";
+            img.parentNode.appendChild(dl);
+        }, { once: true });
+
+        cOut.parentNode.insertBefore(img, cOut);
     });
     gif.render();
 }
