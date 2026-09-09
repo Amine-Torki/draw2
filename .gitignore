@@ -8,3 +8,6 @@ __pycache__/
 
 # Discarded design drafts, kept locally only.
 docs/Archive/
+
+# Vite dev server cache
+docs/.vite/

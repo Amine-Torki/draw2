@@ -174,7 +174,7 @@ function setLoadStatus(text, pct, hint = "") {
     if (bar) bar.style.width = pct + "%";
 
     const label = $("btn-load-label");
-    if (label) label.textContent = hint ? `${text} (${hint})` : `${text} - ${Math.round(pct)}%`;
+    if (label) label.textContent = hint || `${text} - ${Math.round(pct)}%`;
 
     const s = $("lp-status"), p = $("lp-pct"), h = $("lp-hint");
     if (s) s.textContent = text;
@@ -182,29 +182,150 @@ function setLoadStatus(text, pct, hint = "") {
     if (h) h.textContent = hint;
 }
 
-async function fetchWithProgress(url, label, fromPct, toPct, signal) {
+// YOLO, then the ViT, then the card DB
+const DL_STEPS = 3;
+
+const MODEL_CACHE = "draw2-models-v1";
+// Max is deliberately absent: 386 MB is too much to park on someone's disk
+// without asking. Each entry is keyed by URL, so switching models keeps both.
+const CACHEABLE = new Set([YOLO_URL, VIT_YUGISCAN_URL, VIT_FP16_URL, NAMES_URL, YUGISCAN_LABELS_URL]);
+const cacheAvailable = () => typeof caches !== "undefined";
+
+
+async function cachedResponse(url, signal) {
+    if (!CACHEABLE.has(url) || !cacheAvailable()) return null;
+    try {
+        const cache = await caches.open(MODEL_CACHE);
+        const hit = await cache.match(url);
+        if (!hit) return null;
+        const known = hit.headers.get("x-draw2-etag");
+        if (known) {
+            // The URLs point at a branch, so the bytes behind them can change.
+            // HuggingFace exposes ETag through CORS, so one HEAD settles it.
+            const head = await fetch(url, { method: "HEAD", signal }).catch(() => null);
+            const current = head?.headers.get("ETag");
+            if (current && current !== known) { await cache.delete(url); return null; }
+        }
+        // Never hand an empty buffer to ORT: it fails deep inside the runtime
+        // with "No graph was found in the protobuf", which says nothing about
+        // the cache being at fault. Drop the entry and refetch instead.
+        const expected = Number(hit.headers.get("x-draw2-size") || 0);
+        const buf = await hit.arrayBuffer();
+        if (!buf.byteLength || (expected && buf.byteLength !== expected)) {
+            dbg(`  cached ${url.split("/").pop().split("?")[0]} is truncated, refetching`);
+            await cache.delete(url);
+            return null;
+        }
+        return buf;
+    } catch { return null; }
+}
+
+// Writes are not awaited inline, but they still have to be waited on before the
+// cache can be measured: a 193 MB put lands seconds after the load finishes.
+const cacheWrites = [];
+const flushCacheWrites = () => Promise.allSettled(cacheWrites.splice(0));
+
+function cacheStore(url, bytes, etag) {
+    if (!CACHEABLE.has(url) || !cacheAvailable()) return;
+
+    // Built synchronously, before the buffer goes anywhere else. ORT runs in a
+    // worker (wasm.proxy) and transfers the ArrayBuffer into it, which detaches
+    // it: constructing the Response later captured zero bytes and poisoned the
+    // cache with an empty model.
+    let response;
+    try {
+        response = new Response(bytes, {
+            headers: { "x-draw2-size": String(bytes.length), ...(etag ? { "x-draw2-etag": etag } : {}) }
+        });
+    } catch { return; }
+
+    // The write itself is not awaited: 193 MB to disk must not hold up
+    // compilation, and a failure (quota, private window) must not break loading.
+    cacheWrites.push(caches.open(MODEL_CACHE)
+        .then(c => c.put(url, response))
+        .then(() => dbg(`  cached ${url.split("/").pop().split("?")[0]}`))
+        .catch(() => {}));
+}
+
+// Summed from the headers rather than the bodies: reading 333 MB back just to
+// measure it would defeat the point of caching it.
+async function cachedBytes() {
+    if (!cacheAvailable()) return 0;
+    try {
+        const cache = await caches.open(MODEL_CACHE);
+        let total = 0;
+        for (const k of await cache.keys()) {
+            const r = await cache.match(k);
+            total += Number(r?.headers.get("x-draw2-size") || 0);
+        }
+        return total;
+    } catch { return 0; }
+}
+
+// Once the engine is up the load button has nothing left to load, so it becomes
+// the way to get the cached weights back off the disk.
+let clearCacheMode = false;
+
+async function refreshLoadButton() {
+    const btn = $("btn-load"), label = $("btn-load-label");
+    if (!btn || !label || !modelsReady) return;
+    const bytes = await cachedBytes();
+    clearCacheMode = bytes > 0;
+    btn.disabled = !clearCacheMode;
+    label.textContent = clearCacheMode
+        ? T("runtime.clear_cache", { mb: (bytes / 1e6).toFixed(0) })
+        : T("runtime.engine_ready");
+}
+
+async function clearModelCache() {
+    try { await caches.delete(MODEL_CACHE); } catch {}
+    status(T("runtime.cache_cleared"));
+    await refreshLoadButton();
+}
+
+async function fetchWithProgress(url, label, fromPct, toPct, signal, step = 0) {
+    const hit = await cachedResponse(url, signal);
+    if (hit) {
+        dbg(`  ${url.split("/").pop().split("?")[0]} served from cache`);
+        setLoadStatus(label, toPct, T("runtime.dl_cached", { step, steps: DL_STEPS }));
+        return hit;
+    }
     const res = await fetch(url, { signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}  ${url}`);
     const total = parseInt(res.headers.get("Content-Length") || "0", 10);
     const reader = res.body.getReader();
     let received = 0;
     const chunks = [];
+
+    let lastUi = 0;
+
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         chunks.push(value);
         received += value.length;
         if (total > 0) {
-            const frac = received / total;
-            const pct  = fromPct + frac * (toPct - fromPct);
-            const recMB  = (received / 1e6).toFixed(1);
-            const totMB  = (total    / 1e6).toFixed(1);
-            setLoadStatus(label, pct, `${recMB} / ${totMB} MB`);
+            const now = performance.now();
+            // Repainting on every chunk is thousands of layouts on a 386 MB file
+            if (now - lastUi > 250 || received === total) {
+                lastUi = now;
+                const frac = received / total;
+                // Percentage is the whole load, not this file: it matches the
+                // bar, and the file counter says where in the load we are.
+                const pct = fromPct + frac * (toPct - fromPct);
+                setLoadStatus(label, pct, T("runtime.dl_progress", {
+                    pct: Math.round(pct),
+                    step, steps: DL_STEPS,
+                    done: (received / 1e6).toFixed(1),
+                    total: (total / 1e6).toFixed(1)
+                }));
+            }
         }
     }
     const all = new Uint8Array(received);
     let pos = 0;
     for (const c of chunks) { all.set(c, pos); pos += c.length; }
+    cacheStore(url, all, res.headers.get("ETag"));
     return all.buffer;
 }
 
@@ -238,7 +359,7 @@ async function init() {
 
         setLoadStatus(T("runtime.dl_yolo"), 0, "");
         const yoloBuf = await fetchWithProgress(
-            YOLO_URL, T("runtime.dl_yolo"), 0, 30, signal
+            YOLO_URL, T("runtime.dl_yolo"), 0, 30, signal, 1
         );
         setLoadStatus(T("runtime.compiling_yolo"), 30, "");
         yoloSession = await ort.InferenceSession.create(yoloBuf, {
@@ -246,10 +367,10 @@ async function init() {
             logSeverityLevel: 3
         });
 
-        const vitSize = precision === "fp32" ? "386 MB" : precision === "fp16" ? "193 MB" : "40 MB";
+        const vitSize = precision === "fp32" ? "386 MB" : precision === "fp16" ? "193 MB" : "98 MB";
         setLoadStatus(T("runtime.dl_vit", { size: vitSize }), 32, "");
         const vitBuf = await fetchWithProgress(
-            vitUrl, T("runtime.dl_vit", { size: vitSize }), 32, 92, signal
+            vitUrl, T("runtime.dl_vit", { size: vitSize }), 32, 92, signal, 2
         );
         setLoadStatus(T("runtime.compiling_vit"), 92, "");
         
@@ -260,7 +381,7 @@ async function init() {
             logSeverityLevel: 3
         });
 
-        const labelsBuf = await fetchWithProgress(namesUrl, "Downloading card DB", 92, 100, signal);
+        const labelsBuf = await fetchWithProgress(namesUrl, "Downloading card DB", 92, 100, signal, 3);
         cardnames = JSON.parse(new TextDecoder().decode(labelsBuf));
 
         if (precision === "yugiscan" && Object.keys(cardId2Names).length === 0) {
@@ -290,6 +411,7 @@ async function init() {
         currentPrecision = precision;
         modelsReady = true;
         enableInputs();
+        flushCacheWrites().then(refreshLoadButton);
 
         const precisionLabel = { yugiscan: "Small", fp16: "Medium", fp32: "Max" }[precision] || precision;
         status(T("runtime.model_downloaded", { model: precisionLabel }));
@@ -307,6 +429,21 @@ async function init() {
     } finally {
         loadAbortController = null;
     }
+}
+
+// Mirror of enableInputs. Selecting another model does not load it, so the
+// inputs have to go back behind the lock: otherwise a prediction runs on the
+// session still in memory while the UI shows a different model selected.
+function disableInputs() {
+    $("dz-browse").disabled = true;
+    $("btn-webcam").disabled = true;
+    const dz = $("dropzone");
+    dz.setAttribute("data-disabled", "");
+    dz.removeAttribute("tabindex");
+    $("dropzone-lock")?.removeAttribute("hidden");
+    document.querySelectorAll(".sample-btn").forEach(b => b.disabled = true);
+    const btnLive = $("btn-live");
+    if (btnLive) btnLive.disabled = true;
 }
 
 function enableInputs() {
@@ -1142,15 +1279,26 @@ function setupLoadButton() {
     const btn = $("btn-load");
     if (btn) btn.addEventListener("click", () => {
         if (loadAbortController) loadAbortController.abort();
+        else if (clearCacheMode) clearModelCache();
         else init();
     });
 
     document.querySelectorAll('input[name="model"]').forEach(radio => {
         radio.addEventListener("change", () => {
-            if (modelsReady && radio.value !== currentPrecision && btn) {
+            if (!modelsReady || !btn) return;
+            if (radio.value !== currentPrecision) {
+                clearCacheMode = false;
                 btn.disabled = false;
                 $("btn-load-label").textContent = T("demo.btn_download");
                 $("lp-bar")?.style.setProperty("width", "0%");
+                // The session in memory is still the previous model.
+                liveActive = false;
+                stopWebcam();
+                disableInputs();
+            } else {
+                // Back on the model that is actually loaded, so it is usable again.
+                enableInputs();
+                refreshLoadButton();
             }
         });
     });
@@ -1712,5 +1860,4 @@ async function processAnimated(file) {
     });
     gif.render();
 }
-
 
