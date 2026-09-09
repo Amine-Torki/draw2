@@ -29,12 +29,11 @@ jobs:
 
       - name: Minify JS and CSS
         run: |
-          mkdir -p docs/script
           shopt -s nullglob
-          for file in script/*.js; do
+          for file in docs/scripts/*.js; do
             name="$(basename "$file")"
             npx --yes terser "$file" -c -m -o "/tmp/$name"
-            mv "/tmp/$name" "docs/script/$name"
+            mv "/tmp/$name" "docs/scripts/$name"
           done
           npx --yes lightningcss-cli --minify docs/style.css -o /tmp/style.css
           mv /tmp/style.css docs/style.css
