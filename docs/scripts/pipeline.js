@@ -417,6 +417,21 @@ async function init() {
     }
 }
 
+// Mirror of enableInputs. Selecting another model does not load it, so the
+// inputs have to go back behind the lock: otherwise a prediction runs on the
+// session still in memory while the UI shows a different model selected.
+function disableInputs() {
+    $("dz-browse").disabled = true;
+    $("btn-webcam").disabled = true;
+    const dz = $("dropzone");
+    dz.setAttribute("data-disabled", "");
+    dz.removeAttribute("tabindex");
+    $("dropzone-lock")?.removeAttribute("hidden");
+    document.querySelectorAll(".sample-btn").forEach(b => b.disabled = true);
+    const btnLive = $("btn-live");
+    if (btnLive) btnLive.disabled = true;
+}
+
 function enableInputs() {
     $("dz-browse").disabled = false;
     $("btn-webcam").disabled = false;
@@ -1078,11 +1093,20 @@ function setupLoadButton() {
 
     document.querySelectorAll('input[name="model"]').forEach(radio => {
         radio.addEventListener("change", () => {
-            if (modelsReady && radio.value !== currentPrecision && btn) {
+            if (!modelsReady || !btn) return;
+            if (radio.value !== currentPrecision) {
                 clearCacheMode = false;
                 btn.disabled = false;
                 $("btn-load-label").textContent = T("demo.btn_download");
                 $("lp-bar")?.style.setProperty("width", "0%");
+                // The session in memory is still the previous model.
+                liveActive = false;
+                stopWebcam();
+                disableInputs();
+            } else {
+                // Back on the model that is actually loaded, so it is usable again.
+                enableInputs();
+                refreshLoadButton();
             }
         });
     });
