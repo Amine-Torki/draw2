@@ -288,7 +288,10 @@
             <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-black/10 dark:via-white/20 to-transparent"></div>
             <div class="flex justify-between items-center mb-6">
               <h4 data-i18n="demo.detection_output" class="font-bold">Detection Output</h4>
-              <button id="btn-reset" data-i18n="demo.clear_all" class="btn text-xs font-bold bg-black/5 dark:bg-white/10 px-3 py-1.5 rounded hover:bg-black/10 dark:hover:bg-white/20">Clear All</button>
+              <span id="compare-hint" hidden class="flex items-center gap-1.5 text-xs font-medium text-emerald-600 animate-pulse">
+                <span data-i18n="demo.compare_hint">Click a card !</span>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m0 0l-6-6m6 6l6-6"/></svg>
+              </span>
             </div>
             <div id="cards-grid" class="grid grid-cols-2 md:grid-cols-3 gap-3 overflow-y-auto max-h-[220px] pr-2 content-start pb-2"></div>
           </div>
@@ -312,6 +315,37 @@
     <button id="btn-fullscreen-close" data-i18n-attr="title:demo.fullscreen_close_title" title="Close" class="btn absolute top-4 right-4 sm:top-6 sm:right-6 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
     </button>
+  </div>
+
+  <div id="compare-viewer" hidden class="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6">
+    <div class="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-full max-w-3xl max-h-full overflow-y-auto p-4 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="cmp-name">
+      <div class="flex items-start justify-between gap-4 mb-4">
+        <div class="min-w-0">
+          <div id="cmp-name" class="font-display font-bold text-lg text-zinc-900 dark:text-white truncate"></div>
+          <div id="cmp-score" class="font-mono text-emerald-600 text-sm font-semibold"></div>
+        </div>
+        <button id="btn-compare-close" data-i18n-attr="title:demo.compare_close_title" title="Close" class="btn shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-zinc-100 dark:bg-white/10 text-zinc-900 dark:text-white hover:bg-zinc-200 dark:hover:bg-white/20">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 sm:gap-4">
+        <figure class="m-0">
+          <figcaption data-i18n="demo.compare_detected" class="text-xs uppercase tracking-wide text-zinc-500 mb-1.5">Detected</figcaption>
+          <canvas id="cmp-crop" class="w-full aspect-[3/4] object-contain bg-zinc-900 rounded-lg border border-zinc-200 dark:border-white/10"></canvas>
+        </figure>
+        <figure class="m-0">
+          <figcaption data-i18n="demo.compare_predicted" class="text-xs uppercase tracking-wide text-zinc-500 mb-1.5">Predicted card</figcaption>
+          <img id="cmp-art" alt="" class="w-full aspect-[3/4] object-contain bg-zinc-100 dark:bg-white/5 rounded-lg border border-zinc-200 dark:border-white/10">
+          <div id="cmp-art-missing" hidden data-i18n="demo.compare_no_art" class="text-xs text-zinc-500 mt-1.5">No artwork available</div>
+        </figure>
+      </div>
+
+      <div id="cmp-alts-wrap" hidden class="mt-5">
+        <div data-i18n="demo.compare_alternatives" class="text-xs uppercase tracking-wide text-zinc-500 mb-2">Other candidates</div>
+        <div id="cmp-alts" class="flex gap-2 flex-wrap"></div>
+      </div>
+    </div>
   </div>
 
   <script src="scripts/header-buttons.js"></script>

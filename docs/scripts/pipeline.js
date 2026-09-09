@@ -155,6 +155,20 @@ function cardNameFor(entry, index) {
     return localizedName(entry) || String(index);
 }
 
+// Official artwork lookup. Both label shapes carry the card_id: the fp32/fp16
+// entries hold it as a field, Small's plain-string labels end with "-<id>".
+function cardIdFor(entry) {
+    if (!entry) return null;
+    if (typeof entry === "string") return entry.match(/-(\d+)$/)?.[1] || null;
+    return entry.card_id || null;
+}
+function cardArtUrl(index, size = "small") {
+    const id = cardIdFor(cardnames[String(index)]);
+    if (!id) return null;
+    const dir = size === "large" ? "cards" : "cards_small";
+    return `https://images.ygoprodeck.com/images/${dir}/${id}.jpg`;
+}
+
 function setLoadStatus(text, pct, hint = "") {
     const bar = $("lp-bar");
     if (bar) bar.style.width = pct + "%";
@@ -496,8 +510,14 @@ function parseYOLOOutput(output, scale, padX, padY) {
         if (conf < CONF_THRESH) continue;
         const x  = (xc - padX) / scale;
         const y  = (yc - padY) / scale;
-        const bw = w / scale, bh = h / scale;
-        const pts = xywhrToCorners(x, y, bw, bh, angle);
+        let bw = w / scale, bh = h / scale, ang = angle;
+        // Force the box onto the card's portrait convention. The crop is warped
+        // into a square, so a landscape box maps the long axis onto x and the
+        // card comes out both sideways and squeezed: rotating it upright after
+        // the fact leaves the aspect inverted against what the ViT was trained
+        // on, which caps confidence no matter which rotation wins.
+        if (bw > bh) { const t = bw; bw = bh; bh = t; ang += Math.PI / 2; }
+        const pts = xywhrToCorners(x, y, bw, bh, ang);
         detections.push({ pts, conf, w: bw, h: bh });
     }
     return nmsOBB(detections);
@@ -570,12 +590,14 @@ function topK(logits, k) {
     return probs.map((p,i)=>({i,p})).sort((a,b)=>b.p-a.p).slice(0,k);
 }
 
+// Boxes are normalised to portrait upstream, so the card fills the crop either
+// upright or flipped: only the 180 ambiguity is left, decided on which end
+// carries the bright text box.
 function correctRotation(imageData) {
     const w = CROP_SIZE, h = CROP_SIZE, data = imageData.data;
-    const margin = Math.round(w * 0.15); 
-    let topL = 0, botL = 0, leftL = 0, rightL = 0;
-    
-    // Top & Bottom
+    const margin = Math.round(w * 0.15);
+    let topL = 0, botL = 0;
+
     for (let y = 0; y < margin; y++) {
         for (let x = margin; x < w - margin; x++) {
             const i1 = (y * w + x) * 4;
@@ -584,26 +606,16 @@ function correctRotation(imageData) {
             botL += 0.299 * data[i2] + 0.587 * data[i2+1] + 0.114 * data[i2+2];
         }
     }
-    // Left & Right
-    for (let y = margin; y < h - margin; y++) {
-        for (let x = 0; x < margin; x++) {
-            const i1 = (y * w + x) * 4;
-            leftL += 0.299 * data[i1] + 0.587 * data[i1+1] + 0.114 * data[i1+2];
-            const i2 = (y * w + (w - 1 - x)) * 4;
-            rightL += 0.299 * data[i2] + 0.587 * data[i2+1] + 0.114 * data[i2+2];
-        }
-    }
-    
-    const max = Math.max(topL, botL, leftL, rightL);
-    if (max === botL) return 0;
-    if (max === topL) return 180;
-    if (max === leftL) return 270;
-    return 90;
+    return topL > botL ? 180 : 0;
 }
 
-// Rotation fallback: try other 3 orientations if top-1 confidence is suspiciously low
+// Rotation fallback: try the flip if top-1 confidence is suspiciously low
 const ROTATION_FALLBACK_CONFIDENCE = 0.15;
-const ALL_ROTATIONS = [0, 90, 180, 270];
+const ALL_ROTATIONS = [0, 180];
+// A genuinely flipped card wins by an order of magnitude; a marginal gain on
+// two near-zero scores is noise, and acting on it swaps one wrong label for
+// another while flipping the crop shown to the user.
+const ROTATION_FLIP_MARGIN = 1.25;
 
 async function classifyCrop(imageData) {
     const vitTensor = preprocessViT(imageData);
@@ -622,13 +634,19 @@ async function classifyWithRotationFallback(crop) {
 
     if (best.confidence < ROTATION_FALLBACK_CONFIDENCE) {
         dbg(`  low confidence (${(best.confidence*100).toFixed(1)}%) at rot=${guess}, trying other rotations`);
+        // Measured against the first prediction, not against a moving best, so
+        // the bar is "beats the detected orientation" however many are tried.
+        const baseline = best.confidence;
         for (const rot of ALL_ROTATIONS) {
             if (rot === guess) continue;
             const corrected = rotateImageData(crop, rot);
             const result = await classifyCrop(corrected);
-            dbg(`    rot=${rot}: ${(result.confidence*100).toFixed(1)}%`);
-            if (result.confidence > best.confidence) {
+            const gain = baseline > 0 ? result.confidence / baseline : Infinity;
+            dbg(`    rot=${rot}: ${(result.confidence*100).toFixed(1)}% (${gain.toFixed(2)}x)`);
+            if (result.confidence > baseline * ROTATION_FLIP_MARGIN && result.confidence > best.confidence) {
                 bestRot = rot; bestCorrected = corrected; best = result;
+            } else {
+                dbg(`    rot=${rot} rejected: needs >${ROTATION_FLIP_MARGIN}x to beat rot=${guess}`);
             }
         }
     }
@@ -725,6 +743,11 @@ function drawOverlayLetterboxed(canvas, srcImage, detections, predictions) {
 //  RESULT CARDS 
 function renderResultCards(grid, croppedImages, predictions) {
     grid.innerHTML="";
+    const hint = $("compare-hint");
+    if (hint) {
+        hint.hidden = croppedImages.every(c => !c);
+        if (localStorage.getItem("draw2_compare_seen")) hint.classList.remove("animate-pulse");
+    }
     croppedImages.forEach((cropData,idx) => {
         if (!cropData) return;
         const top=predictions[idx]?.[0];
@@ -746,8 +769,110 @@ function renderResultCards(grid, croppedImages, predictions) {
 
         meta.appendChild(nameEl); meta.appendChild(scoreEl);
         item.appendChild(cc); item.appendChild(meta);
+
+        // A name alone is unverifiable for anyone who does not know the cards by
+        // heart, so the whole card opens a side-by-side against the real artwork.
+        const preds = predictions[idx] || [];
+        item.classList.add("cursor-zoom-in", "text-left", "w-full");
+        item.setAttribute("role", "button");
+        item.tabIndex = 0;
+        item.title = T("demo.compare_open_title");
+        const open = () => {
+            localStorage.setItem("draw2_compare_seen", "1");
+            $("compare-hint")?.classList.remove("animate-pulse");
+            openCompare(cropData, preds);
+        };
+        item.addEventListener("click", open);
+        item.addEventListener("keydown", e => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
+
+        const badge=document.createElement("div");
+        badge.className="self-center pr-3 text-zinc-300 group-hover:text-emerald-600 transition-colors shrink-0";
+        badge.innerHTML='<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16zM11 8v6M8 11h6"/></svg>';
+        item.appendChild(badge);
+
         grid.appendChild(item);
     });
+}
+
+//  COMPARE VIEWER 
+// Shows the detected crop against the official artwork of a candidate, so a
+// prediction can be judged on the image rather than on a name the user may
+// not recognise. Clicking a runner-up swaps the right pane.
+const ALT_RELEVANCE_RATIO = 0.1; // a runner-up must reach 10% of the top score
+
+function openCompare(cropData, predictions) {
+    const viewer = $("compare-viewer");
+    if (!viewer || !predictions?.length) return;
+
+    const cropCanvas = $("cmp-crop");
+    if (cropCanvas && cropData) {
+        cropCanvas.width = cropData.width;
+        cropCanvas.height = cropData.height;
+        cropCanvas.getContext("2d").putImageData(cropData, 0, 0);
+    }
+
+    const art     = $("cmp-art");
+    const missing = $("cmp-art-missing");
+    const nameEl  = $("cmp-name");
+    const scoreEl = $("cmp-score");
+
+    function show(pred) {
+        if (nameEl)  nameEl.textContent  = pred.name;
+        if (scoreEl) scoreEl.textContent = (pred.p * 100).toFixed(1) + "%";
+        const url = cardArtUrl(pred.i, "large");
+        if (art) {
+            art.hidden = !url;
+            if (url) { art.src = url; art.alt = pred.name; art.referrerPolicy = "no-referrer"; }
+        }
+        if (missing) missing.hidden = !!url;
+    }
+
+    // Runners-up are only worth showing when the model is actually hesitating.
+    // Against a confident top-1 they sit near zero and are pure noise, so the
+    // cut is relative to the top score rather than absolute.
+    const alts     = $("cmp-alts");
+    const altsWrap = $("cmp-alts-wrap");
+    const floor    = predictions[0].p * ALT_RELEVANCE_RATIO;
+    const shown    = [predictions[0], ...predictions.slice(1).filter(pr => pr.p >= floor)];
+    if (alts) {
+        alts.innerHTML = "";
+        shown.forEach(pred => {
+            const b = document.createElement("button");
+            b.className = "btn flex items-center gap-2 pr-2.5 rounded border border-zinc-200 dark:border-white/10 hover:border-emerald-500 overflow-hidden bg-white dark:bg-white/5";
+            const thumbUrl = cardArtUrl(pred.i, "small");
+            if (thumbUrl) {
+                const th = document.createElement("img");
+                th.src = thumbUrl; th.alt = ""; th.loading = "lazy"; th.referrerPolicy = "no-referrer";
+                th.className = "w-8 h-11 object-cover shrink-0";
+                th.addEventListener("error", () => th.remove());
+                b.appendChild(th);
+            }
+            const txt = document.createElement("span");
+            txt.className = "text-xs text-left max-w-[11rem] truncate text-zinc-700 dark:text-white/80";
+            txt.textContent = pred.name;
+            const pct = document.createElement("span");
+            pct.className = "font-mono text-xs text-emerald-600 shrink-0";
+            pct.textContent = (pred.p * 100).toFixed(1) + "%";
+            b.appendChild(txt); b.appendChild(pct);
+            b.addEventListener("click", () => show(pred));
+            alts.appendChild(b);
+        });
+    }
+    if (altsWrap) altsWrap.hidden = shown.length < 2;
+
+    show(predictions[0]);
+    viewer.hidden = false;
+}
+
+function setupCompareViewer() {
+    const viewer = $("compare-viewer");
+    if (!viewer) return;
+    const close = () => { viewer.hidden = true; const a = $("cmp-art"); if (a) a.src = ""; };
+    $("btn-compare-close")?.addEventListener("click", close);
+    viewer.addEventListener("click", e => { if (e.target === viewer) close(); });
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && !viewer.hidden) close(); });
 }
 
 async function detectAndClassify(imageData, { showSteps = true, onDetections, onCard } = {}) {
@@ -968,7 +1093,6 @@ function setupDropzone() {
     const dz      = $("dropzone");
     const input   = $("file-input");
     const browse  = $("dz-browse");
-    const resetBtn = $("btn-reset");
 
     if (!dz || !input) return;
 
@@ -1009,7 +1133,6 @@ function setupDropzone() {
     });
 
     input.addEventListener("change", () => { if(input.files[0]) handleImage(input.files[0]); });
-    if (resetBtn) resetBtn.addEventListener("click", resetUI);
 }
 
 function setupSampleButtons() {
@@ -1267,6 +1390,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupSampleButtons();
     setupFullscreenViewer();
     setupFullscreenButtonPosition();
+    setupCompareViewer();
     injectVerbosityToggle();
 });
 
