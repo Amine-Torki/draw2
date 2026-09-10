@@ -166,6 +166,7 @@ function cardArtUrl(index, size = "small") {
     const id = cardIdFor(cardnames[String(index)]);
     if (!id) return null;
     const dir = size === "large" ? "cards" : "cards_small";
+    console.log("ygoprodeck api call")
     return `https://images.ygoprodeck.com/images/${dir}/${id}.jpg`;
 }
 
@@ -973,7 +974,7 @@ function renderResultCards(grid, croppedImages, predictions) {
         const open = () => {
             localStorage.setItem("draw2_compare_seen", "1");
             $("compare-hint")?.classList.remove("animate-pulse");
-            openCompare(cropData, preds);
+            // openCompare(cropData, preds);
         };
         item.addEventListener("click", open);
         item.addEventListener("mouseenter", () => highlightDetection(idx));
