@@ -316,6 +316,10 @@ async function refreshLoadButton() {
     const bytes = await cachedBytes();
     clearCacheMode = bytes > 0;
     btn.disabled = !clearCacheMode;
+    // The progress bar sits above the button background, so it has to clear
+    // for the red to show at all.
+    btn.classList.toggle("btn-danger", clearCacheMode);
+    if (clearCacheMode) $("lp-bar")?.style.setProperty("width", "0%");
     label.textContent = clearCacheMode
         ? T("runtime.clear_cache", { mb: (bytes / 1e6).toFixed(0) })
         : T("runtime.engine_ready");
@@ -1455,6 +1459,7 @@ function setupLoadButton() {
             if (radio.value !== currentPrecision) {
                 clearCacheMode = false;
                 btn.disabled = false;
+                btn.classList.remove("btn-danger");
                 $("btn-load-label").textContent = T("demo.btn_download");
                 $("lp-bar")?.style.setProperty("width", "0%");
                 // The session in memory is still the previous model.
