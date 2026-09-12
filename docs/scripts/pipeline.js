@@ -894,31 +894,51 @@ function drawOverlay(canvas, srcImage, detections, predictions) {
 // two slightly apart) with black bars, so a square/portrait source image
 // never leaves uneven empty gutters around the canvas content, which would
 // throw off the BorderTrail loading animation.
+// Cached: reading it forces a layout pass, once per painted frame otherwise.
+let resultAspect = 0;
+
 function getResultAspect() {
+    if (resultAspect) return resultAspect;
     const wrap = document.getElementById("canvas-wrap");
     if (wrap) {
+        if (!wrap.dataset.aspectWatched) {
+            wrap.dataset.aspectWatched = "1";
+            new ResizeObserver(() => { resultAspect = 0; }).observe(wrap);
+        }
         const cs = getComputedStyle(wrap);
         const w = wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
         const h = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-        if (w > 0 && h > 0) return w / h;
+        if (w > 0 && h > 0) return (resultAspect = w / h);
     }
     return 16 / 9;
 }
-function drawOverlayLetterboxed(canvas, srcImage, detections, predictions, highlight = -1) {
-    const targetAspect = getResultAspect();
-    const srcAspect = srcImage.width / srcImage.height;
-    const canvasW = srcAspect > targetAspect ? srcImage.width : Math.round(srcImage.height * targetAspect);
-    const canvasH = srcAspect > targetAspect ? Math.round(srcImage.width / targetAspect) : srcImage.height;
-    canvas.width = canvasW;
-    canvas.height = canvasH;
+// An ImageData needs a bitmap; a <video> draws straight and must not be closed.
+function overlaySource(src) {
+    if (src instanceof ImageData) {
+        return { w: src.width, h: src.height, img: imageDataToBitmap(src), owned: true };
+    }
+    return { w: src.videoWidth || src.width, h: src.videoHeight || src.height, img: src, owned: false };
+}
+
+function drawOverlayLetterboxed(canvas, srcImage, detections, predictions, highlight = -1, aspectOverride = 0) {
+    const src = overlaySource(srcImage);
+    const targetAspect = aspectOverride || getResultAspect();
+    const srcAspect = src.w / src.h;
+    const canvasW = srcAspect > targetAspect ? src.w : Math.round(src.h * targetAspect);
+    const canvasH = srcAspect > targetAspect ? Math.round(src.w / targetAspect) : src.h;
+    // Assigning either one reallocates the buffer and resets the context.
+    if (canvas.width !== canvasW || canvas.height !== canvasH) {
+        canvas.width = canvasW;
+        canvas.height = canvasH;
+    }
 
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvasW, canvasH);
 
-    const offsetX = Math.round((canvasW - srcImage.width) / 2);
-    const offsetY = Math.round((canvasH - srcImage.height) / 2);
-    const bmp = imageDataToBitmap(srcImage);
+    const offsetX = Math.round((canvasW - src.w) / 2);
+    const offsetY = Math.round((canvasH - src.h) / 2);
+    const bmp = src.img;
     ctx.drawImage(bmp, offsetX, offsetY);
 
     ctx.save();
@@ -944,9 +964,9 @@ function drawOverlayLetterboxed(canvas, srcImage, detections, predictions, highl
         }
     }
 
-    drawDetections(ctx, srcImage.width, detections, predictions, highlight);
+    drawDetections(ctx, src.w, detections, predictions, highlight);
     ctx.restore();
-    bmp.close();
+    if (src.owned) bmp.close();
 }
 
 // Set by the still-image path only. Hovering a result card redraws the output
@@ -959,8 +979,8 @@ let hoverTimer = null;
 
 function applyHover(idx) {
     if (hoverSource) {
-        const { canvas, imageData, detections, predictions } = hoverSource;
-        drawOverlayLetterboxed(canvas, imageData, detections, predictions, idx);
+        const { canvas, imageData, detections, predictions, aspect } = hoverSource;
+        drawOverlayLetterboxed(canvas, imageData, detections, predictions, idx, aspect || 0);
     }
     const grid = $("cards-grid");
     if (!grid) return;
@@ -1002,11 +1022,13 @@ function detectionAtPoint(clientX, clientY) {
     const { canvas, imageData, detections } = hoverSource;
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return -1;
+    const srcW = imageData.videoWidth || imageData.width;
+    const srcH = imageData.videoHeight || imageData.height;
     const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
     const x = (clientX - rect.left - (rect.width - canvas.width * scale) / 2) / scale
-            - Math.round((canvas.width - imageData.width) / 2);
+            - Math.round((canvas.width - srcW) / 2);
     const y = (clientY - rect.top - (rect.height - canvas.height * scale) / 2) / scale
-            - Math.round((canvas.height - imageData.height) / 2);
+            - Math.round((canvas.height - srcH) / 2);
     for (let i = 0; i < detections.length; i++) {
         if (pointInQuad(x, y, detections[i].pts)) return i;
     }
@@ -1017,7 +1039,7 @@ function ensureHoverCard() {
     if (hoverCardEl) return hoverCardEl;
     hoverCardEl = document.createElement("img");
     hoverCardEl.alt = "";
-    hoverCardEl.style.cssText = "position:fixed;left:0;top:0;z-index:90;pointer-events:none;"
+    hoverCardEl.style.cssText = "position:fixed;left:0;top:0;z-index:110;pointer-events:none;"
         + `width:${HOVER_CARD_W}px;border-radius:10px;opacity:0;`
         + "box-shadow:0 18px 40px rgba(0,0,0,.45);transition:opacity .16s ease;will-change:transform";
     document.body.appendChild(hoverCardEl);
@@ -1026,7 +1048,7 @@ function ensureHoverCard() {
 
 function moveHoverCard(clientX, clientY) {
     const h = Math.round(HOVER_CARD_W * CARD_ART_H / CARD_ART_W);
-    const pad = 18;
+    const pad = 30;
     let x = clientX + pad;
     if (x + HOVER_CARD_W > window.innerWidth - 8) x = clientX - pad - HOVER_CARD_W;
     const y = Math.max(8, Math.min(window.innerHeight - h - 8, clientY - h / 2));
@@ -1072,14 +1094,87 @@ function hideHoverCard() {
     hoverCardRaf = 0;
 }
 
+// Plays a clip on the canvas, so the displayed frame is known and hit-testable.
+let clipPlayer = null;
+
+function stopClipPlayer() {
+    clipPlayer?.stop();
+    clipPlayer = null;
+}
+
+function startClipPlayer(canvas, source, keyResults, nearestKey) {
+    stopClipPlayer();
+    const isArray = Array.isArray(source);
+    // Decoded once, not rebuilt on every painted frame.
+    const bitmaps = isArray ? source.map(imageDataToBitmap) : null;
+    const state = { idx: 0, paused: false, bitmaps };
+
+    let target = canvas, fitNative = false;
+    // Fullscreen retargets the player, so the clip keeps playing.
+    state.setCanvas = (c, native = false) => { target = c; fitNative = native; };
+
+    const paint = () => {
+        const r = keyResults.get(nearestKey(state.idx)) || { detections: [], allPredictions: [] };
+        const frame = isArray ? bitmaps[Math.min(state.idx, bitmaps.length - 1)] : source;
+        const w = frame.videoWidth || frame.width, h = frame.videoHeight || frame.height;
+        const aspect = fitNative ? w / h : 0;
+        hoverSource = { canvas: target, imageData: frame, detections: r.detections, predictions: r.allPredictions, aspect };
+        drawOverlayLetterboxed(target, frame, r.detections, r.allPredictions, canvasHoverIdx, aspect);
+    };
+
+    if (isArray) {
+        let raf = 0, last = performance.now(), acc = 0;
+        const step = 1000 / EXTRACT_FPS;
+        const loop = now => {
+            acc += now - last;
+            last = now;
+            while (acc >= step) {
+                acc -= step;
+                if (!state.paused) state.idx = (state.idx + 1) % bitmaps.length;
+            }
+            paint();
+            raf = requestAnimationFrame(loop);
+        };
+        raf = requestAnimationFrame(loop);
+        state.stop = () => { cancelAnimationFrame(raf); bitmaps.forEach(b => b.close()); };
+        state.setPaused = p => { state.paused = p; };
+    } else {
+        source.loop = true;
+        source.muted = true;
+        source.play().catch(() => {});
+        let cancelled = false;
+        const rvfc = typeof source.requestVideoFrameCallback === "function";
+        const onFrame = (now, meta) => {
+            if (cancelled) return;
+            state.idx = Math.round((meta ? meta.mediaTime : source.currentTime) * EXTRACT_FPS);
+            paint();
+            schedule();
+        };
+        const schedule = () => {
+            if (rvfc) source.requestVideoFrameCallback(onFrame);
+            else requestAnimationFrame(() => onFrame(0, null));
+        };
+        schedule();
+        state.stop = () => { cancelled = true; source.pause(); };
+        state.setPaused = p => { p ? source.pause() : source.play().catch(() => {}); };
+    }
+
+    clipPlayer = state;
+    return state;
+}
+
 function setupCanvasHover() {
-    const canvas = $("canvas-out");
+    for (const id of ["canvas-out", "fullscreen-viewer-canvas"]) bindCanvasHover($(id));
+}
+
+function bindCanvasHover(canvas) {
     if (!canvas) return;
     canvas.addEventListener("mousemove", e => {
         const idx = detectionAtPoint(e.clientX, e.clientY);
         if (idx !== canvasHoverIdx) {
             canvasHoverIdx = idx;
             highlightDetection(idx);
+            clipPlayer?.setPaused(idx >= 0);
             if (idx >= 0) showHoverCard(idx, e.clientX, e.clientY);
             else hideHoverCard();
         } else if (idx >= 0) {
@@ -1089,6 +1184,7 @@ function setupCanvasHover() {
     canvas.addEventListener("mouseleave", () => {
         canvasHoverIdx = -1;
         highlightDetection(-1);
+        clipPlayer?.setPaused(false);
         hideHoverCard();
     });
 }
@@ -1337,8 +1433,8 @@ async function detectAndClassify(imageData, { showSteps = true, onDetections, on
 // Main Pipeline
 async function runPipeline(imageData) {
     if (cancelRequested) return;
+    stopClipPlayer();
 
-    const g = $("gif-result"); if (g) g.remove();
     const dl = $("gif-dl"); if (dl) dl.remove();
     if ($("canvas-out")) $("canvas-out").style.display = "";
 
@@ -1434,6 +1530,7 @@ function hideDropzoneOnLoad() {
 }
 
 function resetUI() {
+    stopClipPlayer();
     hoverSource = null;
     if ($("canvas-wrap")) $("canvas-wrap").hidden = true;
     if ($("results")) $("results").hidden = true;
@@ -1674,7 +1771,6 @@ function setupWebcam() {
             if (webcamRow) webcamRow.style.display = "none";
             if ($("canvas-wrap")) $("canvas-wrap").hidden = true;
             if ($("results")) $("results").hidden = true;
-            $("gif-result")?.remove();
             $("gif-dl")?.remove();
             if (wrap) wrap.hidden = false;
         } catch { alert("Webcam access denied or unavailable."); }
@@ -1745,12 +1841,27 @@ function setupFullscreenViewer() {
     const img      = $("fullscreen-viewer-img");
     if (!btn || !viewer || !img) return;
 
+    const fsCanvas = $("fullscreen-viewer-canvas");
+
     function open() {
-        const gifResult = $("gif-result");
         const canvasOut = $("canvas-out");
-        if (gifResult && gifResult.src) {
-            img.src = gifResult.src;
+        // Tailwind's preflight makes canvas/img display:block, which beats the
+        // UA rule for [hidden], so these have to be switched on style.
+        if (clipPlayer && fsCanvas) {
+            img.style.display = "none";
+            fsCanvas.style.display = "";
+            clipPlayer.setCanvas(fsCanvas, true);
+        } else if (fsCanvas && hoverSource && hoverSource.canvas === canvasOut) {
+            // A still keeps its overlay and stays hoverable, enlarged.
+            const src = hoverSource.imageData;
+            img.style.display = "none";
+            fsCanvas.style.display = "";
+            hoverSource.canvas = fsCanvas;
+            hoverSource.aspect = (src.videoWidth || src.width) / (src.videoHeight || src.height);
+            applyHover(canvasHoverIdx);
         } else if (canvasOut && canvasOut.width) {
+            if (fsCanvas) fsCanvas.style.display = "none";
+            img.style.display = "";
             img.src = canvasOut.toDataURL();
         } else {
             return;
@@ -1760,6 +1871,15 @@ function setupFullscreenViewer() {
     function close() {
         viewer.hidden = true;
         img.src = "";
+        if (fsCanvas) fsCanvas.style.display = "none";
+        img.style.display = "";
+        const canvasOut = $("canvas-out");
+        clipPlayer?.setCanvas(canvasOut, false);
+        if (!clipPlayer && hoverSource && hoverSource.canvas === fsCanvas) {
+            hoverSource.canvas = canvasOut;
+            hoverSource.aspect = 0;
+            applyHover(-1);
+        }
     }
 
     btn.addEventListener("click", open);
@@ -1862,9 +1982,9 @@ function denoiseKeyResults(keyResults, keyIndices, confirmed) {
 }
 
 async function processAnimated(file) {
-    const g = $("gif-result"); if (g) g.remove();
     const dl = $("gif-dl"); if (dl) dl.remove();
     if ($("results")) $("results").hidden = true; // don't carry over the last run's cards
+    stopClipPlayer();
     hoverSource = null; // the canvas will be showing frames, not the hovered image
     if ($("canvas-out")) $("canvas-out").style.display = "";
     if ($("canvas-wrap")) $("canvas-wrap").hidden = false;
@@ -1879,9 +1999,20 @@ async function processAnimated(file) {
         resetUI();
     }
 
-    // Declared here, not in the try below: gif.on/gif.render run after that
-    // block's finally, where a block-scoped binding would be out of scope.
-    let gif;
+    // Declared outside the try below: the export runs after that block's finally.
+    let playbackVideo = null, canvasOut = null, gifW = 0, gifH = 0, clipCount = 0;
+    const frames = [];
+    const keyIndices = [];
+    const keyResults = new Map();
+
+    function nearestKey(i) {
+        let best = keyIndices[0], bestDist = Infinity;
+        for (const k of keyIndices) {
+            const d = Math.abs(k - i);
+            if (d < bestDist) { bestDist = d; best = k; }
+        }
+        return best;
+    }
 
     window.__bgAnim?.pause();
     if ($("canvas-trail")) $("canvas-trail").hidden = false;
@@ -1899,7 +2030,6 @@ async function processAnimated(file) {
     }
 
     setRunLabel("Extracting frames...");
-    const frames = [];
 
     // Extraction takes seconds; show frame 0 as soon as it exists so the
     // capsule is filled at the right size immediately, like a still image.
@@ -1911,6 +2041,7 @@ async function processAnimated(file) {
 
     if (file.type.startsWith("video/")) {
         const video = document.createElement("video");
+        playbackVideo = video;
         video.src = URL.createObjectURL(file);
         video.muted = true;
         await new Promise((r, reject) => { video.onloadeddata = r; video.onerror = reject; });
@@ -1926,7 +2057,7 @@ async function processAnimated(file) {
         const scale = Math.min(1.0, MAX_PREDICTION_SIDE / Math.max(video.videoWidth, video.videoHeight));
         canvas.width = Math.round(video.videoWidth * scale);
         canvas.height = Math.round(video.videoHeight * scale);
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
         const totalFrames = Math.floor(video.duration * EXTRACT_FPS);
         status(T("log.extract_video", { dur: video.duration.toFixed(1), fps: EXTRACT_FPS, w: canvas.width, h: canvas.height }));
@@ -1965,7 +2096,7 @@ async function processAnimated(file) {
             const scale = Math.min(1.0, MAX_PREDICTION_SIDE / Math.max(vf.displayWidth, vf.displayHeight));
             canvas.width = Math.round(vf.displayWidth * scale);
             canvas.height = Math.round(vf.displayHeight * scale);
-            const ctx = canvas.getContext("2d");
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
             ctx.drawImage(vf, 0, 0, canvas.width, canvas.height);
             frames.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
             vf.close();
@@ -1981,11 +2112,9 @@ async function processAnimated(file) {
 
     // Inference on keyframes (stride = EXTRACT_FPS / INFERENCE_FPS)
     const stride = Math.max(1, Math.round(EXTRACT_FPS / INFERENCE_FPS));
-    const keyIndices = [];
     for (let i = 0; i < frames.length; i += stride) keyIndices.push(i);
     if (keyIndices[keyIndices.length - 1] !== frames.length - 1) keyIndices.push(frames.length - 1);
 
-    const keyResults = new Map();
     // Every card seen over the run, each with its best-scoring crop.
     const bestByCard = new Map();
     status(T("log.running_detection", { count: keyIndices.length }));
@@ -2019,99 +2148,109 @@ async function processAnimated(file) {
     if (cancelRequested) { cancelCleanup(); return; }
     status(T("log.keyframe_done"));
 
-    function nearestKey(i) {
-        let best = keyIndices[0], bestDist = Infinity;
-        for (const k of keyIndices) {
-            const d = Math.abs(k - i);
-            if (d < bestDist) { bestDist = d; best = k; }
-        }
-        return best;
-    }
-
-    // Encode at the letterboxed aspect the frames were previewed at, so the
-    // finished GIF lands in the same capsule at the same size with no jump.
+    // Encoded at the aspect the clip is previewed at.
     const boxAspect = getResultAspect();
     const srcAspect = frames[0].width / frames[0].height;
     const boxW = srcAspect > boxAspect ? frames[0].width  : Math.round(frames[0].height * boxAspect);
     const boxH = srcAspect > boxAspect ? Math.round(frames[0].width / boxAspect) : frames[0].height;
     const outScale = Math.min(1.0, GIF_OUTPUT_SIDE / Math.max(boxW, boxH));
-    const gifW = Math.round(boxW * outScale);
-    const gifH = Math.round(boxH * outScale);
-    const workerStr = `importScripts("https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js");`;
-    const blob = new Blob([workerStr], {type: "application/javascript"});
-    gif = new GIF({
-        workers: 2,
-        quality: 10,
-        workerScript: URL.createObjectURL(blob),
-        width: gifW,
-        height: gifH
-    });
-
-    const gifFrameCanvas = document.createElement("canvas");
-    gifFrameCanvas.width = gifW;
-    gifFrameCanvas.height = gifH;
-    const gifFrameCtx = gifFrameCanvas.getContext("2d");
-
-    const canvasOut = $("canvas-out");
-    status(T("log.rendering_frames", { count: frames.length }));
-    for (let i = 0; i < frames.length; i++) {
-        if (cancelRequested) break;
-        const { detections, allPredictions } = keyResults.get(nearestKey(i)) || { detections: [], allPredictions: [] };
-        if (canvasOut) drawOverlayLetterboxed(canvasOut, frames[i], detections, allPredictions);
-
-        gifFrameCtx.fillStyle = "#000";
-        gifFrameCtx.fillRect(0, 0, gifW, gifH);
-        if (canvasOut) gifFrameCtx.drawImage(canvasOut, 0, 0, gifW, gifH);
-        gif.addFrame(gifFrameCanvas, {delay: Math.round(1000 / EXTRACT_FPS), copy: true});
-
-        setRunLabel(`Rendering frame ${i+1}/${frames.length}...`);
-        dbgProgress("render", "Rendering frames", i + 1, frames.length);
-        if (i % 5 === 0) await nextFrame();
-    }
-    dbgProgressDone("render");
-    if (cancelRequested) { cancelCleanup(); return; }
-    status(T("log.frame_rendering_done"));
+    gifW = Math.round(boxW * outScale);
+    gifH = Math.round(boxH * outScale);
+    clipCount = frames.length;
+    canvasOut = $("canvas-out");
 
     } finally {
         window.__bgAnim?.resume();
         if ($("canvas-trail")) $("canvas-trail").hidden = true;
     }
 
-    setRunLabel("Encoding output GIF...");
-    status(T("log.encoding_gif"));
-    gif.on("finished", function(blob) {
-        setRunLabel("Engine Ready");
-        if (runRow) runRow.hidden = true;
-        status(T("log.gif_ready", { size: (blob.size/1024).toFixed(0) }));
-        const cOut = document.getElementById("canvas-out");
-        const existingImg = document.getElementById("gif-result");
-        if (existingImg) existingImg.remove();
-        const existingDl = document.getElementById("gif-dl");
-        if (existingDl) existingDl.remove();
+    if (!canvasOut) return;
+    document.getElementById("gif-dl")?.remove();
+    canvasOut.style.display = "";
+    const player = startClipPlayer(canvasOut, playbackVideo || frames, keyResults, nearestKey);
+    frames.length = 0;
 
-        const img = document.createElement("img");
-        img.id = "gif-result";
-        img.src = URL.createObjectURL(blob);
-        img.className = cOut.className;
+    setRunLabel("Engine Ready");
+    if (runRow) runRow.hidden = true;
 
-        // Swap the canvas out and offer the download only once the GIF is
-        // actually decoded: doing it on src assignment shows the button over a
-        // frame that has not painted yet, which reads as "ready" too early.
-        img.addEventListener("load", () => {
-            cOut.style.display = "none";
+    const DL_CLASS = "absolute bottom-4 right-4 px-4 py-2 rounded-lg font-bold text-xs shadow-lg z-50 text-white";
+    const btn = document.createElement("button");
+    btn.id = "gif-dl";
+    btn.className = DL_CLASS + " bg-emerald-500 hover:bg-emerald-400";
+    btn.textContent = T("runtime.export_gif");
+    btn.addEventListener("click", () => exportClipGif(btn), { once: true });
+    canvasOut.parentNode.style.position = "relative";
+    canvasOut.parentNode.appendChild(btn);
 
+    function seekTo(video, t) {
+        return new Promise(r => { video.onseeked = () => r(); video.currentTime = t; });
+    }
+
+    // Nothing is encoded until asked: the encode is the longest step.
+    async function exportClipGif(button) {
+        button.disabled = true;
+        button.className = DL_CLASS + " bg-zinc-500 opacity-70 cursor-default";
+        const label = pct => { button.textContent = T("runtime.encoding_gif") + " " + pct + "%"; };
+        label(0);
+        player.setPaused(true);
+
+        const workerBlob = new Blob(
+            [`importScripts("https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js");`],
+            { type: "application/javascript" });
+        const encoder = new GIF({
+            workers: 2,
+            quality: 10,
+            workerScript: URL.createObjectURL(workerBlob),
+            width: gifW,
+            height: gifH
+        });
+
+        const out = document.createElement("canvas");
+        out.width = gifW;
+        out.height = gifH;
+        const outCtx = out.getContext("2d");
+        const scratch = document.createElement("canvas");
+
+        status(T("log.rendering_frames", { count: clipCount }));
+        for (let i = 0; i < clipCount; i++) {
+            if (cancelRequested) {
+                player.setPaused(false);
+                button.disabled = false;
+                button.className = DL_CLASS + " bg-emerald-500 hover:bg-emerald-400";
+                button.textContent = T("runtime.export_gif");
+                button.addEventListener("click", () => exportClipGif(button), { once: true });
+                return;
+            }
+            const r = keyResults.get(nearestKey(i)) || { detections: [], allPredictions: [] };
+            let frame = playbackVideo;
+            if (player.bitmaps) frame = player.bitmaps[i];
+            else await seekTo(playbackVideo, i / EXTRACT_FPS);
+            drawOverlayLetterboxed(scratch, frame, r.detections, r.allPredictions);
+            outCtx.fillStyle = "#000";
+            outCtx.fillRect(0, 0, gifW, gifH);
+            outCtx.drawImage(scratch, 0, 0, gifW, gifH);
+            encoder.addFrame(out, { delay: Math.round(1000 / EXTRACT_FPS), copy: true });
+            label(Math.round(((i + 1) / clipCount) * 50));
+            dbgProgress("render", "Rendering frames", i + 1, clipCount);
+            if (i % 5 === 0) await nextFrame();
+        }
+        dbgProgressDone("render");
+        status(T("log.encoding_gif"));
+
+        encoder.on("progress", p => label(50 + Math.round(p * 50)));
+        encoder.on("finished", blob => {
+            status(T("log.gif_ready", { size: (blob.size / 1024).toFixed(0) }));
+            player.setPaused(false);
+            if (!button.isConnected) return;
             const dl = document.createElement("a");
             dl.id = "gif-dl";
-            dl.href = img.src;
+            dl.href = URL.createObjectURL(blob);
             dl.download = "draw2_prediction.gif";
-            dl.className = "absolute bottom-4 right-4 bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-lg hover:bg-emerald-400 z-50";
+            dl.className = DL_CLASS + " bg-emerald-500 hover:bg-emerald-400";
             dl.textContent = T("runtime.download_gif");
-            img.parentNode.style.position = "relative";
-            img.parentNode.appendChild(dl);
-        }, { once: true });
-
-        cOut.parentNode.insertBefore(img, cOut);
-    });
-    gif.render();
+            button.replaceWith(dl);
+        });
+        encoder.render();
+    }
 }
 
