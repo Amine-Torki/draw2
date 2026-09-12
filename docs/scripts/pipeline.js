@@ -202,6 +202,7 @@ function artSrcFor(index) {
 }
 
 function prefetchArtwork(predictions) {
+    hideHoverCard();
     for (const p of artCache.values()) {
         Promise.resolve(p).then(src => { if (src) URL.revokeObjectURL(src); });
     }
@@ -974,6 +975,120 @@ function highlightDetection(idx) {
     hoverTimer = setTimeout(() => applyHover(-1), HOVER_LINGER_MS);
 }
 
+const HOVER_CARD_W = 176;
+let hoverCardEl = null, hoverCardPos = null, hoverCardTarget = null;
+let hoverCardRaf = 0, canvasHoverIdx = -1;
+
+function pointInQuad(px, py, pts) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+        const a = pts[i], b = pts[(i + 1) % 4];
+        const cross = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x);
+        if (!cross) continue;
+        const s = cross > 0 ? 1 : -1;
+        if (!sign) sign = s;
+        else if (s !== sign) return false;
+    }
+    return true;
+}
+
+// Two nested letterboxes: buffer in element, then image in buffer.
+function detectionAtPoint(clientX, clientY) {
+    if (!hoverSource) return -1;
+    const { canvas, imageData, detections } = hoverSource;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return -1;
+    const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+    const x = (clientX - rect.left - (rect.width - canvas.width * scale) / 2) / scale
+            - Math.round((canvas.width - imageData.width) / 2);
+    const y = (clientY - rect.top - (rect.height - canvas.height * scale) / 2) / scale
+            - Math.round((canvas.height - imageData.height) / 2);
+    for (let i = 0; i < detections.length; i++) {
+        if (pointInQuad(x, y, detections[i].pts)) return i;
+    }
+    return -1;
+}
+
+function ensureHoverCard() {
+    if (hoverCardEl) return hoverCardEl;
+    hoverCardEl = document.createElement("img");
+    hoverCardEl.alt = "";
+    hoverCardEl.style.cssText = "position:fixed;left:0;top:0;z-index:90;pointer-events:none;"
+        + `width:${HOVER_CARD_W}px;border-radius:10px;opacity:0;`
+        + "box-shadow:0 18px 40px rgba(0,0,0,.45);transition:opacity .16s ease;will-change:transform";
+    document.body.appendChild(hoverCardEl);
+    return hoverCardEl;
+}
+
+function moveHoverCard(clientX, clientY) {
+    const h = Math.round(HOVER_CARD_W * CARD_ART_H / CARD_ART_W);
+    const pad = 18;
+    let x = clientX + pad;
+    if (x + HOVER_CARD_W > window.innerWidth - 8) x = clientX - pad - HOVER_CARD_W;
+    const y = Math.max(8, Math.min(window.innerHeight - h - 8, clientY - h / 2));
+    hoverCardTarget = { x, y };
+    if (!hoverCardPos) hoverCardPos = { x, y };
+}
+
+// Lag and tilt with the cursor, so the card floats instead of being pinned.
+function hoverCardFrame() {
+    const dx = hoverCardTarget.x - hoverCardPos.x;
+    const dy = hoverCardTarget.y - hoverCardPos.y;
+    hoverCardPos.x += dx * 0.16;
+    hoverCardPos.y += dy * 0.16;
+    const yaw   = Math.max(-14, Math.min(14, dx * 0.4));
+    const pitch = Math.max(-10, Math.min(10, dy * 0.3));
+    hoverCardEl.style.transform = `translate3d(${hoverCardPos.x}px, ${hoverCardPos.y}px, 0) `
+        + `perspective(700px) rotateY(${yaw}deg) rotateX(${pitch}deg)`;
+    hoverCardRaf = requestAnimationFrame(hoverCardFrame);
+}
+
+function showHoverCard(idx, clientX, clientY) {
+    const top = hoverSource?.predictions?.[idx]?.[0];
+    const src = top ? artSrcFor(top.i) : null;
+    if (!src) { hideHoverCard(); return; }
+    const el = ensureHoverCard();
+    const wasHidden = el.style.opacity !== "1";
+    el.dataset.want = String(top.i);
+    Promise.resolve(src).then(u => {
+        if (el.dataset.want !== String(top.i)) return;
+        el.src = u || ART_PLACEHOLDER;
+        el.style.opacity = "1";
+    });
+    moveHoverCard(clientX, clientY);
+    if (wasHidden) hoverCardPos = { ...hoverCardTarget };
+    if (!hoverCardRaf) hoverCardRaf = requestAnimationFrame(hoverCardFrame);
+}
+
+function hideHoverCard() {
+    if (!hoverCardEl) return;
+    hoverCardEl.style.opacity = "0";
+    hoverCardEl.dataset.want = "";
+    cancelAnimationFrame(hoverCardRaf);
+    hoverCardRaf = 0;
+}
+
+function setupCanvasHover() {
+    const canvas = $("canvas-out");
+    if (!canvas) return;
+    canvas.addEventListener("mousemove", e => {
+        const idx = detectionAtPoint(e.clientX, e.clientY);
+        if (idx !== canvasHoverIdx) {
+            canvasHoverIdx = idx;
+            highlightDetection(idx);
+            if (idx >= 0) showHoverCard(idx, e.clientX, e.clientY);
+            else hideHoverCard();
+        } else if (idx >= 0) {
+            moveHoverCard(e.clientX, e.clientY);
+        }
+    });
+    canvas.addEventListener("mouseleave", () => {
+        canvasHoverIdx = -1;
+        highlightDetection(-1);
+        hideHoverCard();
+    });
+}
+
 //  RESULT CARDS 
 function renderResultCards(grid, croppedImages, predictions) {
     grid.innerHTML="";
@@ -1657,6 +1772,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupFullscreenViewer();
     setupFullscreenButtonPosition();
     setupCompareViewer();
+    setupCanvasHover();
     injectVerbosityToggle();
 });
 
