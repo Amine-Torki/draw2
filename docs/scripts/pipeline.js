@@ -170,6 +170,25 @@ function cardArtUrl(index) {
 // once into a blob and served from memory afterwards.
 const artCache = new Map();
 
+// Neutral card silhouette for the handful of ids the bucket is missing.
+const ART_PLACEHOLDER = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 421 614">
+        <rect x="16" y="16" width="389" height="582" rx="20" fill="rgba(255,255,255,.85)"/>
+        <g fill="none" stroke="rgba(113,113,122,.38)" stroke-width="5">
+            <rect x="16" y="16" width="389" height="582" rx="20"/>
+            <rect x="52" y="120" width="317" height="317" rx="6"/>
+        </g>
+        <g fill="rgba(113,113,122,.22)">
+            <rect x="52" y="62" width="242" height="34" rx="6"/>
+            <rect x="52" y="470" width="317" height="13" rx="6"/>
+            <rect x="52" y="500" width="268" height="13" rx="6"/>
+            <rect x="52" y="530" width="196" height="13" rx="6"/>
+        </g>
+        <text x="210" y="280" text-anchor="middle" dominant-baseline="central"
+              font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="168"
+              font-weight="700" fill="rgba(113,113,122,.42)">?</text>
+    </svg>`);
+
 function artSrcFor(index) {
     if (artCache.has(index)) return artCache.get(index);
     const url = cardArtUrl(index);
@@ -177,14 +196,14 @@ function artSrcFor(index) {
     const pending = fetch(url, { referrerPolicy: "no-referrer" })
         .then(r => r.ok ? r.blob() : Promise.reject(r.status))
         .then(b => URL.createObjectURL(b))
-        .catch(() => url);
+        .catch(() => null);
     artCache.set(index, pending);
     return pending;
 }
 
 function prefetchArtwork(predictions) {
     for (const p of artCache.values()) {
-        Promise.resolve(p).then(src => { if (src.startsWith("blob:")) URL.revokeObjectURL(src); });
+        Promise.resolve(p).then(src => { if (src) URL.revokeObjectURL(src); });
     }
     artCache.clear();
     for (const preds of predictions || []) {
@@ -1050,17 +1069,16 @@ function openCompare(cropData, predictions) {
         if (nameEl)  nameEl.textContent  = pred.name;
         if (scoreEl) scoreEl.textContent = (pred.p * 100).toFixed(1) + "%";
         const src = artSrcFor(pred.i);
-        if (art) {
-            art.hidden = !src;
-            if (src) {
+        if (art) art.dataset.want = String(pred.i);
+        Promise.resolve(src).then(u => {
+            if (art && art.dataset.want !== String(pred.i)) return;
+            if (art) {
+                art.hidden = false;
+                art.src = u || ART_PLACEHOLDER;
                 art.alt = pred.name;
-                art.dataset.want = String(pred.i);
-                Promise.resolve(src).then(u => {
-                    if (art.dataset.want === String(pred.i)) art.src = u;
-                });
             }
-        }
-        if (missing) missing.hidden = !!src;
+            if (missing) missing.hidden = !!u;
+        });
     }
 
     // Runners-up are only worth showing when the model is actually hesitating.
@@ -1079,7 +1097,7 @@ function openCompare(cropData, predictions) {
             if (thumbSrc) {
                 const th = document.createElement("img");
                 th.alt = ""; th.loading = "lazy";
-                Promise.resolve(thumbSrc).then(u => { th.src = u; });
+                Promise.resolve(thumbSrc).then(u => { th.src = u || ART_PLACEHOLDER; });
                 th.className = "w-8 h-11 object-cover shrink-0";
                 th.addEventListener("error", () => th.remove());
                 b.appendChild(th);
