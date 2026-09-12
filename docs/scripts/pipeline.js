@@ -155,19 +155,42 @@ function cardNameFor(entry, index) {
     return localizedName(entry) || String(index);
 }
 
-// Official artwork lookup. Both label shapes carry the card_id: the fp32/fp16
-// entries hold it as a field, Small's plain-string labels end with "-<id>".
-function cardIdFor(entry) {
-    if (!entry) return null;
-    if (typeof entry === "string") return entry.match(/-(\d+)$/)?.[1] || null;
-    return entry.card_id || null;
+// Hotlinking ygoprodeck.com is prohibited and gets the site IP-blacklisted.
+const ART_BUCKET = "https://huggingface.co/buckets/HichTala/ygoprodeck-images/resolve/ygoprodeck";
+
+function cardArtUrl(index) {
+    const entry = cardnames[String(index)];
+    const label = typeof entry === "string" ? entry : entry?.label;
+    const id = label?.match(/-(\d+)$/)?.[1];
+    if (!label || !id) return null;
+    return `${ART_BUCKET}/${encodeURIComponent(label)}/${id}.jpg`;
 }
-function cardArtUrl(index, size = "small") {
-    const id = cardIdFor(cardnames[String(index)]);
-    if (!id) return null;
-    const dir = size === "large" ? "cards" : "cards_small";
-    console.log("ygoprodeck api call")
-    return `https://images.ygoprodeck.com/images/${dir}/${id}.jpg`;
+
+// The bucket is slow and sends no Cache-Control, so each artwork is fetched
+// once into a blob and served from memory afterwards.
+const artCache = new Map();
+
+function artSrcFor(index) {
+    if (artCache.has(index)) return artCache.get(index);
+    const url = cardArtUrl(index);
+    if (!url) return null;
+    const pending = fetch(url, { referrerPolicy: "no-referrer" })
+        .then(r => r.ok ? r.blob() : Promise.reject(r.status))
+        .then(b => URL.createObjectURL(b))
+        .catch(() => url);
+    artCache.set(index, pending);
+    return pending;
+}
+
+function prefetchArtwork(predictions) {
+    for (const p of artCache.values()) {
+        Promise.resolve(p).then(src => { if (src.startsWith("blob:")) URL.revokeObjectURL(src); });
+    }
+    artCache.clear();
+    for (const preds of predictions || []) {
+        const i = preds?.[0]?.i;
+        if (i != null) artSrcFor(i);
+    }
 }
 
 function setLoadStatus(text, pct, hint = "") {
@@ -974,7 +997,7 @@ function renderResultCards(grid, croppedImages, predictions) {
         const open = () => {
             localStorage.setItem("draw2_compare_seen", "1");
             $("compare-hint")?.classList.remove("animate-pulse");
-            // openCompare(cropData, preds);
+            openCompare(cropData, preds);
         };
         item.addEventListener("click", open);
         item.addEventListener("mouseenter", () => highlightDetection(idx));
@@ -990,6 +1013,8 @@ function renderResultCards(grid, croppedImages, predictions) {
 
         grid.appendChild(item);
     });
+
+    prefetchArtwork(predictions);
 }
 
 //  COMPARE VIEWER 
@@ -1024,12 +1049,18 @@ function openCompare(cropData, predictions) {
     function show(pred) {
         if (nameEl)  nameEl.textContent  = pred.name;
         if (scoreEl) scoreEl.textContent = (pred.p * 100).toFixed(1) + "%";
-        const url = cardArtUrl(pred.i, "large");
+        const src = artSrcFor(pred.i);
         if (art) {
-            art.hidden = !url;
-            if (url) { art.src = url; art.alt = pred.name; art.referrerPolicy = "no-referrer"; }
+            art.hidden = !src;
+            if (src) {
+                art.alt = pred.name;
+                art.dataset.want = String(pred.i);
+                Promise.resolve(src).then(u => {
+                    if (art.dataset.want === String(pred.i)) art.src = u;
+                });
+            }
         }
-        if (missing) missing.hidden = !!url;
+        if (missing) missing.hidden = !!src;
     }
 
     // Runners-up are only worth showing when the model is actually hesitating.
@@ -1044,10 +1075,11 @@ function openCompare(cropData, predictions) {
         shown.forEach(pred => {
             const b = document.createElement("button");
             b.className = "btn flex items-center gap-2 pr-2.5 rounded border border-zinc-200 dark:border-white/10 hover:border-emerald-500 overflow-hidden bg-white dark:bg-white/5";
-            const thumbUrl = cardArtUrl(pred.i, "small");
-            if (thumbUrl) {
+            const thumbSrc = artSrcFor(pred.i);
+            if (thumbSrc) {
                 const th = document.createElement("img");
-                th.src = thumbUrl; th.alt = ""; th.loading = "lazy"; th.referrerPolicy = "no-referrer";
+                th.alt = ""; th.loading = "lazy";
+                Promise.resolve(thumbSrc).then(u => { th.src = u; });
                 th.className = "w-8 h-11 object-cover shrink-0";
                 th.addEventListener("error", () => th.remove());
                 b.appendChild(th);
