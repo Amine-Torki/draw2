@@ -1782,6 +1782,80 @@ const GIF_OUTPUT_SIDE = 1280;
 const EXTRACT_FPS = 15;
 const INFERENCE_FPS = 5;
 
+// Under ~0.8s on screen is capture noise. INFERENCE_FPS key frames = 1s.
+const MIN_CARD_FRAMES = 4;
+
+function confirmedCards(keyResults) {
+    const count = new Map(), names = new Map();
+    for (const { allPredictions } of keyResults.values()) {
+        const seen = new Set();
+        for (const preds of allPredictions) {
+            const top = preds?.[0];
+            if (top?.i == null) continue;
+            seen.add(top.i);
+            if (!names.has(top.i)) names.set(top.i, top.name);
+        }
+        for (const i of seen) count.set(i, (count.get(i) || 0) + 1);
+    }
+    const floor = keyResults.size < MIN_CARD_FRAMES ? 1 : MIN_CARD_FRAMES;
+    const ok = new Set();
+    for (const [i, n] of count) if (n >= floor) ok.add(i);
+    dbg(`Card frame counts (${keyResults.size} key frames, floor ${floor}): `
+        + [...count].sort((a, b) => b[1] - a[1])
+            .map(([i, n]) => `${names.get(i)}=${n}${ok.has(i) ? "" : " DROPPED"}`).join(", "));
+    return ok;
+}
+
+function quadCenter(pts) {
+    let x = 0, y = 0;
+    for (const p of pts) { x += p.x; y += p.y; }
+    return { x: x / 4, y: y / 4 };
+}
+
+// Predictions of the closest box sitting at the same spot in an adjacent key
+// frame, or null: a stable box with a bad label, as opposed to a ghost.
+function neighbourPreds(det, around) {
+    const c = quadCenter(det.pts);
+    const tol = Math.hypot(det.pts[0].x - det.pts[2].x, det.pts[0].y - det.pts[2].y) * 0.4;
+    let best = null, bestDist = Infinity;
+    for (const frame of around) {
+        frame.detections.forEach((o, k) => {
+            const oc = quadCenter(o.pts);
+            const d = Math.hypot(oc.x - c.x, oc.y - c.y);
+            if (d <= tol && d < bestDist) { bestDist = d; best = frame.allPredictions[k] || []; }
+        });
+    }
+    return best;
+}
+
+function denoiseKeyResults(keyResults, keyIndices, confirmed) {
+    const order = keyIndices.filter(i => keyResults.has(i));
+    const raw = new Map(order.map(i => [i, keyResults.get(i)]));
+    let dropped = 0, relabelled = 0, unlabelled = 0;
+    order.forEach((idx, n) => {
+        const { detections, allPredictions } = keyResults.get(idx);
+        const around = [order[n - 1], order[n + 1]].filter(v => v != null).map(v => raw.get(v));
+        const dets = [], preds = [];
+        detections.forEach((det, j) => {
+            const list = allPredictions[j] || [];
+            if (confirmed.has(list[0]?.i)) { dets.push(det); preds.push(list); return; }
+            const alt = list.find(p => confirmed.has(p.i));
+            if (alt) { dets.push(det); preds.push([alt, ...list.filter(p => p !== alt)]); relabelled++; return; }
+            const nb = neighbourPreds(det, around);
+            if (nb) {
+                const carried = nb.find(p => confirmed.has(p.i));
+                dets.push(det);
+                preds.push(carried ? [carried] : []);
+                if (carried) relabelled++; else unlabelled++;
+                return;
+            }
+            dropped++;
+        });
+        keyResults.set(idx, { detections: dets, allPredictions: preds });
+    });
+    dbg(`Denoise: ${dropped} ghost box(es) removed, ${relabelled} relabelled, ${unlabelled} left unlabelled`);
+}
+
 async function processAnimated(file) {
     const g = $("gif-result"); if (g) g.remove();
     const dl = $("gif-dl"); if (dl) dl.remove();
@@ -1907,10 +1981,8 @@ async function processAnimated(file) {
     if (keyIndices[keyIndices.length - 1] !== frames.length - 1) keyIndices.push(frames.length - 1);
 
     const keyResults = new Map();
-    // The results grid stayed empty for the whole animated path. Keep the crops
-    // of the first key frame that actually found something, so the panel shows
-    // the same cards a still image would.
-    let firstCards = null;
+    // Every card seen over the run, each with its best-scoring crop.
+    const bestByCard = new Map();
     status(T("log.running_detection", { count: keyIndices.length }));
     for (let k = 0; k < keyIndices.length; k++) {
         if (cancelRequested) break;
@@ -1918,14 +1990,24 @@ async function processAnimated(file) {
         setRunLabel(`Analyzing key frame ${k+1}/${keyIndices.length}...`);
         const { detections, allPredictions, croppedImages } = await detectAndClassify(frames[idx], { showSteps: false });
         keyResults.set(idx, { detections, allPredictions });
-        if (!firstCards && detections.length) firstCards = { croppedImages, allPredictions };
+        allPredictions.forEach((list, j) => {
+            const top = list?.[0];
+            if (!top || !croppedImages[j]) return;
+            const prev = bestByCard.get(top.i);
+            if (!prev || top.p > prev.preds[0].p) bestByCard.set(top.i, { crop: croppedImages[j], preds: list });
+        });
         dbgProgress("infer", "Running detection", k + 1, keyIndices.length);
         await nextFrame();
     }
 
-    if (firstCards) {
+    const confirmed = confirmedCards(keyResults);
+    denoiseKeyResults(keyResults, keyIndices, confirmed);
+    const seenCards = [...bestByCard]
+        .filter(([i]) => confirmed.has(i))
+        .sort((a, b) => b[1].preds[0].p - a[1].preds[0].p);
+    if (seenCards.length) {
         const grid = $("cards-grid");
-        if (grid) renderResultCards(grid, firstCards.croppedImages, firstCards.allPredictions);
+        if (grid) renderResultCards(grid, seenCards.map(e => e[1].crop), seenCards.map(e => e[1].preds));
         if ($("results")) $("results").hidden = false;
     }
     dbgProgressDone("infer");
