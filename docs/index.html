@@ -53,6 +53,10 @@
         </button>
         <div id="lang-menu" hidden class="glass-bento absolute right-0 top-14 z-50 min-w-[8rem] p-1.5 rounded-2xl border !border-black/5 dark:!border-white/20 flex flex-col gap-0.5"></div>
       </div>
+      <button id="bg-toggle" data-i18n-attr="title:nav.bg_title" title="Toggle background animation" class="btn glass-bento shrink-0 w-11 h-11 flex items-center justify-center rounded-full text-zinc-500 dark:text-white border !border-black/5 dark:!border-white/20 bg-on !bg-emerald-500 hover:!bg-emerald-400 !text-white">
+        <svg id="bg-icon-on" class="w-[1.2rem] h-[1.2rem]" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4l1.7 4.6L18.3 10l-4.6 1.4L12 16l-1.7-4.6L5.7 10l4.6-1.4z"></path><path stroke-linecap="round" stroke-linejoin="round" d="M17.5 15l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z"></path></svg>
+        <svg id="bg-icon-off" hidden class="w-[1.2rem] h-[1.2rem]" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4l1.7 4.6L18.3 10l-4.6 1.4L12 16l-1.7-4.6L5.7 10l4.6-1.4z"></path><path stroke-linecap="round" d="M4.5 19.5L19.5 4.5"></path></svg>
+      </button>
       <button id="theme-toggle" class="btn glass-bento shrink-0 w-11 h-11 flex items-center justify-center rounded-full text-zinc-500 dark:text-white border !border-black/5 dark:!border-white/20">
         <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
         <svg class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
